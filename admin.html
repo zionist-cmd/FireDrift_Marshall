@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Админ-панель — SmartKart</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink-2:#52514e;
+    --muted:#898781; --grid:#e1e0d9; --baseline:#c3c2b7;
+    --border:rgba(11,11,11,0.10);
+    --series-1:#2a78d6; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
+    --test:#6d3fc4;
+    --radius:10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7;
+      --muted:#898781; --grid:#2c2c2a; --baseline:#383835;
+      --border:rgba(255,255,255,0.10); --series-1:#3987e5; --test:#a78bfa; --test:#a78bfa;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7;
+    --muted:#898781; --grid:#2c2c2a; --baseline:#383835;
+    --border:rgba(255,255,255,0.10); --series-1:#3987e5; --test:#a78bfa;
+  }
+
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px; background:var(--page); color:var(--ink);
+         font:15px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+  h1 { font-size:20px; margin:0; letter-spacing:-0.01em; }
+  .sub { color:var(--muted); font-size:13px; }
+  .spacer { flex:1; }
+  a { color:var(--series-1); }
+
+  .card { background:var(--surface); border:1px solid var(--border);
+          border-radius:var(--radius); padding:16px; margin-bottom:14px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:0.06em;
+             color:var(--muted); margin:0 0 12px; font-weight:600; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+
+  input[type=text], input[type=number], select {
+    background:var(--page); color:var(--ink); border:1px solid var(--baseline);
+    border-radius:8px; padding:9px 11px; font:inherit; font-variant-numeric:tabular-nums; }
+  input:focus-visible, button:focus-visible, select:focus-visible {
+    outline:2px solid var(--series-1); outline-offset:2px; }
+
+  button { font:inherit; font-weight:600; border:1px solid var(--baseline);
+           border-radius:8px; background:var(--surface); color:var(--ink);
+           padding:9px 15px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--ink-2); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.primary { background:var(--series-1); border-color:var(--series-1); color:#fff; }
+  button.on  { border-color:var(--good); color:var(--good); }
+  button.off { border-color:var(--ink-2); color:var(--ink-2); }
+  button.stop { background:var(--critical); border-color:var(--critical); color:#fff;
+                font-size:17px; padding:16px 28px; }
+
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:7px 10px 7px 0; border-bottom:1px solid var(--grid); vertical-align:top; }
+  th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.05em; }
+  td.mono { font:12px/1.5 ui-monospace,Consolas,monospace; color:var(--ink-2);
+            max-width:420px; overflow-wrap:anywhere; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px;
+          font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .p-idle  { background:color-mix(in srgb,var(--good) 16%,transparent); color:var(--good); }
+  .p-ride  { background:color-mix(in srgb,var(--series-1) 16%,transparent); color:var(--series-1); }
+  .p-crawl { background:color-mix(in srgb,var(--warning) 22%,transparent); color:var(--warning); }
+  .p-off   { background:color-mix(in srgb,var(--muted) 18%,transparent); color:var(--muted); }
+  .p-stuck { background:var(--critical); color:#fff; }
+  .p-test  { background:color-mix(in srgb,var(--test) 18%,transparent); color:var(--test); }
+
+  .danger { border:1px solid color-mix(in srgb,var(--critical) 45%,transparent);
+            border-radius:var(--radius); padding:12px 14px; margin-top:14px;
+            background:color-mix(in srgb,var(--critical) 5%,transparent); }
+  .danger h3 { margin:0 0 4px; font-size:12px; text-transform:uppercase;
+               letter-spacing:.06em; color:var(--critical); }
+
+  #wsLog, #log { background:var(--page); border:1px solid var(--border); border-radius:8px;
+                 padding:10px 12px; height:220px; overflow-y:auto;
+                 font:12px/1.55 ui-monospace,"SF Mono",Consolas,monospace;
+                 white-space:pre-wrap; word-break:break-word; }
+  #wsLog .in{color:var(--good)} #wsLog .out{color:var(--series-1)}
+  #wsLog .sys{color:var(--muted)} #wsLog .t{color:var(--muted)}
+  #log .t{color:var(--muted)} #log .ok{color:var(--good)}
+  #log .err{color:var(--critical)} #log .req{color:var(--series-1)}
+
+  .fields { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
+  .f { border:1px solid var(--border); border-radius:8px; padding:7px 10px;
+       transition:background .35s ease, border-color .35s ease; }
+  .f .k { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em;
+          color:var(--muted); font-weight:600; }
+  .f .v { font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .f.changed { border-color:var(--series-1); background:color-mix(in srgb,var(--series-1) 12%,transparent); }
+
+  .warnbox { border-left:3px solid var(--warning); background:var(--surface);
+             border-radius:0 8px 8px 0; padding:10px 14px; font-size:13px;
+             color:var(--ink-2); margin-bottom:14px; }
+  .hint { font-size:12.5px; color:var(--ink-2); margin-top:10px; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Админ-панель</h1>
+    <span class="sub">SmartKart · наладка и телеметрия</span>
+    <span class="spacer"></span>
+    <a href="/">панель маршала</a>
+    <a href="/logout">выйти</a>
+    <button id="themeBtn" title="Светлая / тёмная тема">◐ Тема</button>
+  </header>
+
+  <div class="warnbox">
+    Здесь можно сломать карт. Перед первым пуском: колёса вывешены, главный выключатель под рукой,
+    <b>maxSpeed 40</b>. Запросы к плате уходят строго по одному — не спамь кнопками, ESP8266 от пачек перезагружается.
+  </div>
+
+  <!-- ---------------------------------------------- парк -->
+  <div class="card">
+    <h2>Парк <span style="text-transform:none;letter-spacing:0;font-weight:400">— карты подключаются сами по вебсокету, опознаются по DUUID</span></h2>
+    <table id="kartTable">
+      <thead><tr>
+        <th style="width:110px">Карт</th><th style="width:110px">DUUID</th>
+        <th style="width:110px">Состояние</th><th style="width:80px">Осталось</th>
+        <th style="width:130px">Адрес</th><th style="width:80px">Молчит</th><th>Телеметрия</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="hint" id="noKarts">
+      Ни один карт не подключился. Карт идёт на адрес, зашитый в его прошивку —
+      проверь, что этот ПК доступен по нему и что порт 8080 открыт в брандмауэре.
+    </div>
+    <div class="row" style="margin-top:14px">
+      <label class="sub" for="target">команды для</label>
+      <select id="target"><option value="*">всех картов</option></select>
+      <button id="bStatus">Status</button>
+      <label class="sub" for="len">Length, с</label>
+      <input type="number" id="len" value="60" min="1" style="width:90px">
+      <button id="bStart" class="on">Start</button>
+      <button id="bStop" class="off">Stop</button>
+      <label class="sub" for="spd">MaxSpeed</label>
+      <input type="number" id="spd" value="15" min="0" max="100" style="width:80px">
+      <button id="bSpeed">Применить</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="raw" size="46" spellcheck="false" value='{"Command":"Status"}'>
+      <button id="bRaw" class="primary">Отправить как есть</button>
+      <span class="sub">регистр важен: <code>Stop</code>, а не <code>stop</code></span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="stop" id="bStopAll">⛔ СТОП ВСЕМ</button>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------- настройки заезда -->
+  <div class="card">
+    <h2>Настройки заезда <span style="text-transform:none;letter-spacing:0;font-weight:400">— сохраняются в marshal.conf и применяются сразу, без перезапуска</span></h2>
+
+    <div class="row" style="margin-bottom:14px">
+      <label class="sub" for="sPresets" style="width:150px">Кнопки времени, мин</label>
+      <input type="text" id="sPresets" size="22" spellcheck="false">
+      <span class="sub">через запятую, до шести штук</span>
+    </div>
+
+    <div class="row" style="margin-bottom:14px">
+      <label class="sub" for="sTest" style="width:150px">Кнопки тест-драйва, мин</label>
+      <input type="text" id="sTest" size="22" spellcheck="false">
+      <span class="sub">до четырёх; пусто = ряд тест-драйва скрыть</span>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <div class="sub" style="margin-bottom:7px">Градации скорости — подпись видит маршал, число уходит в карт</div>
+      <div id="sSpeeds"></div>
+      <button id="sAddSpeed" style="margin-top:8px">+ градация</button>
+    </div>
+
+    <div class="row" style="margin-bottom:14px">
+      <label class="sub" for="sCrawlSpeed" style="width:150px">Скорость докатки, %</label>
+      <input type="number" id="sCrawlSpeed" min="0" max="100" style="width:90px">
+      <label class="sub" for="sCrawlSec">окно, секунд</label>
+      <input type="number" id="sCrawlSec" min="0" max="3600" style="width:100px">
+    </div>
+
+    <div style="margin-bottom:14px">
+      <div class="sub" style="margin-bottom:7px">Имена картов — номер на кузове напротив DUUID</div>
+      <div id="sKarts"></div>
+      <button id="sAddKart" style="margin-top:8px">+ карт</button>
+    </div>
+
+    <div class="row">
+      <button id="sSave" class="primary">Сохранить</button>
+      <button id="sReload">Отменить правки</button>
+      <span class="sub" id="sMsg"></span>
+    </div>
+
+    <div class="hint">
+      Докатка живёт на сервере: по концу оплаченного времени карт гаснет по своему таймеру,
+      сервер сразу шлёт <code>MaxSpeed</code> поменьше и второй <code>Start</code> на окно докатки.
+      Поэтому если сервер упадёт, карт остановится вовремя, а не поедет лишнюю минуту.
+      Окно докатки <code>0</code> отключает её совсем. Пароли правятся только в самом файле.
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------- телеметрия -->
+  <div class="card">
+    <h2>Живые поля <span style="text-transform:none;letter-spacing:0;font-weight:400">— выбранный карт, обновление по вебсокету раз в 3 с</span></h2>
+    <div class="row" style="margin-bottom:12px">
+      <label class="sub" for="tKart">карт</label>
+      <select id="tKart"></select>
+      <span class="sub" id="tNote">нажми педаль и смотри, какое поле дёрнулось</span>
+    </div>
+    <div id="fields" class="fields"><span class="sub">ждём телеметрию…</span></div>
+  </div>
+
+  <!-- ---------------------------------------------- журнал ws -->
+  <div class="card">
+    <h2>Журнал вебсокета</h2>
+    <div id="wsLog"></div>
+  </div>
+
+  <!-- ---------------------------------------------- прямой HTTP -->
+  <div class="card">
+    <h2>Прямой HTTP к плате <span style="text-transform:none;letter-spacing:0;font-weight:400">— только на месте, из облака не работает</span></h2>
+    <div class="row">
+      <label class="sub" for="hKart">карт</label>
+      <select id="hKart"><option value="">— выбери, IP подставится —</option></select>
+      <label class="sub" for="ip">IP карта</label>
+      <input type="text" id="ip" size="16" spellcheck="false" placeholder="10.20.0.101">
+      <button id="bFind">🔍 Найти карты в сети</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="sub" for="subnet" style="width:150px">доп. подсети для поиска</label>
+      <input type="text" id="subnet" size="26" spellcheck="false" value="10.20.0, 192.168.1">
+    </div>
+    <div class="row" style="margin-top:10px">
+      <select id="ep">
+        <option value="config.live.json">config.live.json — вся телеметрия</option>
+        <option value="config.setup.json">config.setup.json — настройки и maxSpeed</option>
+        <option value="setup.json">setup.json</option>
+        <option value="config.json">config.json</option>
+        <option value="index.json">index.json</option>
+        <option value="Sensors">Sensors — dIn, adcIn, температура</option>
+        <option value="rcVal">rcVal — радиопульт (под паролем)</option>
+        <option value="charts.json">charts.json — графики</option>
+        <option value="raceslist.txt">raceslist.txt — список заездов</option>
+        <option value="reboots.json">reboots.json — перезагрузки</option>
+        <option value="localdrives.json">localdrives.json — запуски с монетоприёмника</option>
+        <option value="list?dir=/">list?dir=/ — файлы платы</option>
+        <option value="description.xml">description.xml — SSDP</option>
+      </select>
+      <button id="bGet">Запросить</button>
+      <span class="sub">эти адреса только читают, ничего не меняют</span>
+    </div>
+
+    <div class="danger">
+      <h3>Обслуживание платы — эти кнопки меняют состояние карта</h3>
+      <div class="hint" style="margin:0 0 10px">
+        Всё это сеттеры: они пишут в плату то, что пришло в параметрах запроса.
+        Дёрнуть такой адрес <b>без параметров</b> — значит записать пустое значение,
+        так уже стирали имя устройства. Поэтому здесь у каждого своя кнопка
+        с заранее собранными параметрами, а не поле для ввода произвольного адреса.
+      </div>
+
+      <div class="row" style="margin-bottom:9px">
+        <span class="sub" style="width:150px">Выходы реле</span>
+        <button data-http="On6">On6</button>
+        <button data-http="Off6">Off6</button>
+        <button data-http="On7">On7</button>
+        <button data-http="Off7">Off7</button>
+        <span class="sub">проверка реле напрямую. Это <b>не</b> запуск заезда:
+          <code>driveOn</code> от них не меняется</span>
+      </div>
+
+      <div class="row" style="margin-bottom:9px">
+        <label class="sub" for="hSpeed" style="width:150px">maxSpeed по HTTP (0..255)</label>
+        <input type="number" id="hSpeed" min="0" max="255" value="40" style="width:90px">
+        <button id="bHttpSpeed">Записать в плату</button>
+        <span class="sub">мимо вебсокета, на месте. Обычный путь — <code>MaxSpeed</code> выше</span>
+      </div>
+
+      <div class="row" style="margin-bottom:9px">
+        <label class="sub" for="hTz" style="width:150px">Часовой пояс</label>
+        <input type="number" id="hTz" min="-12" max="14" value="5" style="width:90px">
+        <button id="bTz">Записать</button>
+        <span class="sub">Кызылорда = 5</span>
+      </div>
+
+      <div class="row">
+        <span class="sub" style="width:150px">Перезагрузка</span>
+        <button id="bRestart" style="border-color:var(--critical);color:var(--critical)">
+          Перезагрузить плату</button>
+        <span class="sub">карт пропадёт из парка секунд на 20 и подключится сам</span>
+      </div>
+
+      <div class="hint" style="margin:10px 0 0">
+        Смены Wi-Fi (<code>/ssid</code>, <code>/ssidap</code>, <code>/wifioff</code>) здесь
+        нет намеренно: ошибка в этих полях уносит карт из сети совсем, и вернуть его
+        можно только по USB или через его собственную точку <code>ktWiFi</code>.
+        Если понадобится — скажи, добавлю отдельной кнопкой с подтверждением.
+      </div>
+    </div>
+    <table id="findTable" hidden style="margin-top:12px">
+      <thead><tr><th style="width:150px">IP</th><th style="width:140px">Похоже на карт</th><th style="width:70px">Как</th><th>Ответ</th><th style="width:90px"></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h2 style="margin-top:16px">Лог обмена</h2>
+    <div id="log"></div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var prevVals = {}, wsSeen = -1, lastKarts = [], lastIpSig = "";
+
+  function log(kind, text) {
+    var el = $("log"), d = new Date();
+    var ts = [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map(function (n) { return String(n).padStart(2, "0"); }).join(":");
+    var line = document.createElement("div");
+    line.innerHTML = '<span class="t">' + ts + '</span> <span class="' + kind + '">' +
+                     text.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</span>";
+    el.appendChild(line); el.scrollTop = el.scrollHeight;
+    while (el.childNodes.length > 400) el.removeChild(el.firstChild);
+  }
+
+  function post(url, data) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(data || {}) })
+      .then(function (r) {
+        if (r.status === 403) { location.href = "/login?admin"; throw new Error("вход"); }
+        return r.json();
+      });
+  }
+
+  function send(obj) {
+    var cmd = typeof obj === "string" ? obj : JSON.stringify(obj);
+    return post("/api/admin/send", { kart: $("target").value, cmd: cmd })
+      .then(function (j) {
+        if (!j.ok) log("err", "WS: " + (j.error || "не отправлено"));
+        else log("ok", "WS → " + cmd + "  (картов: " + j.sent.length + ")");
+      })
+      .catch(function (e) { log("err", "WS: " + e.message); });
+  }
+
+  $("bStatus").addEventListener("click", function () { send({ Command: "Status" }); });
+  $("bStop").addEventListener("click",   function () { send({ Command: "Stop" }); });
+  $("bStart").addEventListener("click",  function () {
+    send({ Command: "Start", Length: parseInt($("len").value, 10) || 60 }); });
+  $("bSpeed").addEventListener("click",  function () {
+    send({ Command: "MaxSpeed", MaxSpeed: parseInt($("spd").value, 10) || 15 }); });
+  $("bRaw").addEventListener("click",    function () { send($("raw").value); });
+  $("bStopAll").addEventListener("click", function () {
+    log("err", "=== СТОП ВСЕМ ===");
+    post("/api/stopall").then(function (j) { log("ok", "остановлено: " + j.count); });
+  });
+
+  // ------------------------------------------------------------- состояние
+  var PH = { idle:["p-idle","свободен"], ride:["p-ride","заезд"],
+             crawl:["p-crawl","докатка"], offline:["p-off","нет связи"] };
+
+  function mmss(s) { s = Math.max(0, s|0); return Math.floor(s/60) + ":" + String(s%60).padStart(2,"0"); }
+
+  function fillSelect(sel, karts, keepAll) {
+    var cur = sel.value;
+    sel.innerHTML = keepAll ? '<option value="*">всех картов</option>' : "";
+    karts.forEach(function (k) {
+      var o = document.createElement("option");
+      o.value = k.id; o.textContent = "Карт " + k.name;
+      sel.appendChild(o);
+    });
+    if (cur && Array.prototype.some.call(sel.options, function (o) { return o.value === cur; })) sel.value = cur;
+  }
+
+  function renderFields(o) {
+    var grid = $("fields");
+    var keys = Object.keys(o);
+    if (!keys.length) return;
+    if (grid.dataset.built !== "1") { grid.innerHTML = ""; grid.dataset.built = "1"; }
+    keys.forEach(function (k) {
+      var id = "f_" + k.replace(/[^\w]/g, "_");
+      var box = document.getElementById(id);
+      if (!box) {
+        box = document.createElement("div");
+        box.className = "f"; box.id = id;
+        box.innerHTML = '<div class="k">' + k + '</div><div class="v">—</div>';
+        grid.appendChild(box);
+      }
+      var val = String(o[k]);
+      box.querySelector(".v").textContent = val;
+      if (prevVals[k] !== undefined && prevVals[k] !== val) {
+        box.classList.add("changed");
+        clearTimeout(box._t);
+        box._t = setTimeout(function () { box.classList.remove("changed"); }, 1200);
+      }
+      prevVals[k] = val;
+    });
+  }
+
+  function refresh() {
+    return fetch("/api/state").then(function (r) {
+      if (r.status === 403) { location.href = "/login?admin"; throw new Error("вход"); }
+      return r.json();
+    }).then(function (j) {
+      var karts = j.karts || [];
+      var tbody = $("kartTable").querySelector("tbody");
+      tbody.innerHTML = "";
+      $("noKarts").style.display = karts.length ? "none" : "block";
+
+      karts.forEach(function (k) {
+        try {
+          var phase = k.online ? k.phase : "offline";
+          var p = PH[phase] || PH.idle;
+          if (k.test && phase === "ride") p = ["p-test", "тест-драйв"];
+          if (k.stuck && phase !== "offline") p = ["p-stuck", "едет сам"];
+          var st = k.status || {};
+          var brief = ["driveOn=" + st.driveOn, "kOn=" + st.kOn, "adcIn=" + st.adcIn,
+                       "aIn=" + st.aIn, "Speed=" + st.Speed]
+            .filter(function (x) { return x.indexOf("undefined") < 0; }).join("  ");
+          var tr = document.createElement("tr");
+          tr.innerHTML =
+            "<td><b>Карт " + k.name + "</b></td>" +
+            '<td class="mono">' + (k.duuid || "—") + "</td>" +
+            '<td><span class="pill ' + p[0] + '">' + p[1] + "</span></td>" +
+            "<td>" + (k.left ? mmss(k.left) : "—") + "</td>" +
+            '<td class="mono">' + k.addr + "</td>" +
+            "<td>" + k.idle + " c</td>" +
+            '<td class="mono">' + (brief || "—") + "</td>";
+          tbody.appendChild(tr);
+        } catch (e) {
+          console.error("строка таблицы упала для карта", k && (k.id || k.duuid), e);
+        }
+      });
+
+      if (JSON.stringify(karts.map(function (k) { return k.id + k.name; })) !==
+          JSON.stringify(lastKarts)) {
+        lastKarts = karts.map(function (k) { return k.id + k.name; });
+        fillSelect($("target"), karts, true);
+        fillSelect($("tKart"), karts, false);
+      }
+
+      // IP карта приходит в телеметрии позже имени, поэтому свой признак.
+      var ipSig = karts.map(function (k) {
+        return k.id + ":" + ((k.status && k.status.ip) || "");
+      }).join(",");
+      if (ipSig !== lastIpSig) {
+        lastIpSig = ipSig;
+        var hs = $("hKart"), cur = hs.value;
+        hs.innerHTML = '<option value="">— выбери, IP подставится —</option>';
+        karts.forEach(function (k) {
+          var kip = k.status && k.status.ip;
+          if (!kip) return;
+          var o = document.createElement("option");
+          o.value = kip; o.textContent = "Карт " + k.name + " — " + kip;
+          hs.appendChild(o);
+        });
+        if (cur && Array.prototype.some.call(hs.options,
+              function (o) { return o.value === cur; })) hs.value = cur;
+      }
+
+      var sel = $("tKart").value;
+      var one = karts.filter(function (k) { return k.id === sel; })[0] || karts[0];
+      if (one && one.status) renderFields(one.status);
+    }).catch(function () {});
+  }
+
+  function wsLog() {
+    return fetch("/api/admin/log").then(function (r) { return r.json(); }).then(function (j) {
+      if (!j.log || j.log.length === wsSeen) return;
+      wsSeen = j.log.length;
+      var el = $("wsLog");
+      el.innerHTML = j.log.map(function (r) {
+        var arrow = r.dir === "in" ? "←" : (r.dir === "out" ? "→" : "·");
+        return '<div><span class="t">' + r.t + '</span> <span class="' + r.dir + '">' +
+               arrow + " " + String(r.text).replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</span></div>";
+      }).join("");
+      el.scrollTop = el.scrollHeight;
+    }).catch(function () {});
+  }
+
+  // ------------------------------------------------------------- настройки
+  function speedRow(name, val) {
+    var row = document.createElement("div");
+    row.className = "row"; row.style.marginBottom = "7px";
+    row.innerHTML =
+      '<input type="text" class="sName" size="14" maxlength="16" placeholder="подпись">' +
+      '<input type="number" class="sVal" min="0" max="100" style="width:90px">' +
+      '<button class="sDel">убрать</button>';
+    row.querySelector(".sName").value = name || "";
+    row.querySelector(".sVal").value = (val === undefined ? 50 : val);
+    row.querySelector(".sDel").addEventListener("click", function () { row.remove(); });
+    return row;
+  }
+
+  function kartRow(duuid, name) {
+    var row = document.createElement("div");
+    row.className = "row"; row.style.marginBottom = "7px";
+    row.innerHTML =
+      '<input type="text" class="kDu" size="14" placeholder="DUUID" spellcheck="false">' +
+      '<span class="sub">→ карт №</span>' +
+      '<input type="text" class="kNm" size="6" maxlength="12" placeholder="4">' +
+      '<button class="kDel">убрать</button>';
+    row.querySelector(".kDu").value = duuid || "";
+    row.querySelector(".kNm").value = name || "";
+    row.querySelector(".kDel").addEventListener("click", function () { row.remove(); });
+    return row;
+  }
+
+  function fillSettings(j) {
+    $("sPresets").value = (j.presets || []).join(", ");
+    $("sTest").value = (j.test_presets || []).join(", ");
+    $("sCrawlSpeed").value = j.speed_crawl;
+    $("sCrawlSec").value = j.crawl_seconds;
+    $("spd").value = j.speed_crawl;
+
+    var sp = $("sSpeeds"); sp.innerHTML = "";
+    (j.speeds || []).forEach(function (s) { sp.appendChild(speedRow(s.name, s.val)); });
+
+    var kr = $("sKarts"); kr.innerHTML = "";
+    var names = j.karts || {};
+    Object.keys(names).sort().forEach(function (d) { kr.appendChild(kartRow(d, names[d])); });
+    // карты, которые уже приходили, но ещё без имени — подставим строку
+    (j.seen || []).forEach(function (d) {
+      if (!(d in names)) kr.appendChild(kartRow(d, ""));
+    });
+    if (!kr.children.length) kr.appendChild(kartRow("", ""));
+  }
+
+  function loadSettings() {
+    return fetch("/api/admin/settings").then(function (r) {
+      if (r.status === 403) { location.href = "/login?admin"; throw new Error("вход"); }
+      return r.json();
+    }).then(fillSettings).catch(function () {});
+  }
+
+  $("sAddSpeed").addEventListener("click", function () {
+    if ($("sSpeeds").children.length >= 4) { $("sMsg").textContent = "больше четырёх не влезет на планшет"; return; }
+    $("sSpeeds").appendChild(speedRow("", 50));
+  });
+  $("sAddKart").addEventListener("click", function () { $("sKarts").appendChild(kartRow("", "")); });
+  $("sReload").addEventListener("click", function () { $("sMsg").textContent = ""; loadSettings(); });
+
+  $("sSave").addEventListener("click", function () {
+    var presets = $("sPresets").value.split(",")
+      .map(function (s) { return parseInt(s.trim(), 10); })
+      .filter(function (n) { return !isNaN(n); });
+
+    var testPresets = $("sTest").value.split(",")
+      .map(function (s) { return parseInt(s.trim(), 10); })
+      .filter(function (n) { return !isNaN(n); });
+
+    var speeds = Array.prototype.map.call($("sSpeeds").children, function (row) {
+      return { name: row.querySelector(".sName").value.trim(),
+               val: parseInt(row.querySelector(".sVal").value, 10) || 0 };
+    }).filter(function (s) { return s.name; });
+
+    var karts = {};
+    Array.prototype.forEach.call($("sKarts").children, function (row) {
+      var d = row.querySelector(".kDu").value.trim();
+      var n = row.querySelector(".kNm").value.trim();
+      if (d && n) karts[d] = n;
+    });
+
+    $("sMsg").textContent = "сохраняю…";
+    post("/api/admin/settings", {
+      presets: presets, test_presets: testPresets, speeds: speeds, karts: karts,
+      speed_crawl: parseInt($("sCrawlSpeed").value, 10),
+      crawl_seconds: parseInt($("sCrawlSec").value, 10)
+    }).then(function (j) {
+      if (!j.ok) { $("sMsg").textContent = "не сохранилось: " + (j.error || "ошибка"); return; }
+      $("sMsg").textContent = "сохранено в marshal.conf, применено";
+      fillSettings(j);
+      lastKarts = [];
+      log("ok", "настройки заезда изменены");
+      setTimeout(function () { $("sMsg").textContent = ""; }, 4000);
+    }).catch(function (e) { $("sMsg").textContent = "ошибка: " + e.message; });
+  });
+
+  loadSettings();
+
+  // ------------------------------------------------------------- прямой HTTP
+  function httpCall(pathStr, label) {
+    var ip = $("ip").value.trim();
+    if (!ip) { log("err", "не указан IP карта"); return; }
+    log("req", "→ " + (label || pathStr));
+    post("/api/admin/http", { ip: ip, path: pathStr }).then(function (j) {
+      if (j.ok) {
+        var b = (j.body || "").replace(/\s+/g, " ").trim();
+        log("ok", "← " + j.status + " (" + j.ms + " мс) " +
+                  (b.length > 300 ? b.slice(0, 300) + "…" : b));
+      } else {
+        log("err", "✕ " + (label || pathStr) + " — " + (j.error || ("код " + j.status)));
+      }
+    });
+  }
+
+  // Выходы реле: параметров нет, дёргается сам адрес.
+  Array.prototype.forEach.call(document.querySelectorAll("button[data-http]"), function (b) {
+    b.addEventListener("click", function () { httpCall(b.getAttribute("data-http")); });
+  });
+
+  $("bHttpSpeed").addEventListener("click", function () {
+    var v = parseInt($("hSpeed").value, 10);
+    if (isNaN(v) || v < 0 || v > 255) { log("err", "maxSpeed вне 0..255"); return; }
+    httpCall("maxSpeed?maxSpeed=" + v, "maxSpeed=" + v);
+  });
+
+  $("bTz").addEventListener("click", function () {
+    var v = parseInt($("hTz").value, 10);
+    if (isNaN(v) || v < -12 || v > 14) { log("err", "часовой пояс вне -12..14"); return; }
+    httpCall("timeZone?timeZone=" + v, "timeZone=" + v);
+  });
+
+  $("bRestart").addEventListener("click", function () {
+    if (!confirm("Перезагрузить плату " + ($("ip").value.trim() || "—") + "?\n" +
+                 "Если карт сейчас едет — он остановится.")) return;
+    httpCall("restart", "restart");
+  });
+
+  $("hKart").addEventListener("change", function () {
+    if ($("hKart").value) $("ip").value = $("hKart").value;
+  });
+
+  $("bGet").addEventListener("click", function () {
+    var ip = $("ip").value.trim();
+    if (!ip) { log("err", "не указан IP карта"); return; }
+    var ep = $("ep").value;
+    log("req", "→ " + ep);
+    post("/api/admin/http", { ip: ip, path: ep }).then(function (j) {
+      if (j.ok) {
+        var b = (j.body || "").replace(/\s+/g, " ").trim();
+        log("ok", "← " + j.status + " (" + j.ms + " мс) " + (b.length > 300 ? b.slice(0, 300) + "…" : b));
+      } else {
+        log("err", "✕ " + ep + " — " + (j.error || ("код " + j.status)));
+      }
+    });
+  });
+
+  $("bFind").addEventListener("click", function () {
+    var b = $("bFind"); b.disabled = true; b.textContent = "Ищу…";
+    var extra = ($("subnet").value || "").split(",").map(function (s) { return s.trim(); })
+      .filter(Boolean).map(function (s) { return "subnet=" + encodeURIComponent(s); }).join("&");
+    log("t", "поиск: SSDP + скан подсетей…");
+    fetch("/api/admin/discover" + (extra ? "?" + extra : ""))
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var tb = $("findTable").querySelector("tbody");
+        tb.innerHTML = ""; $("findTable").hidden = false;
+        (j.found || []).forEach(function (d) {
+          var tr = document.createElement("tr");
+          tr.innerHTML = "<td><code>" + d.ip + "</code></td>" +
+            "<td>" + (d.kart ? "● да" + (d.name ? " — " + d.name : "") : "○ просто HTTP") + "</td>" +
+            '<td class="mono">' + (d.via || "") + "</td>" +
+            '<td class="mono">' + String(d.detail || "").replace(/</g, "&lt;").slice(0, 140) + "</td>" +
+            '<td><button data-use="' + d.ip + '">Выбрать</button></td>';
+          tb.appendChild(tr);
+        });
+        tb.querySelectorAll("button[data-use]").forEach(function (btn) {
+          btn.addEventListener("click", function () { $("ip").value = btn.getAttribute("data-use"); });
+        });
+        log("ok", "найдено: " + (j.total || 0) + " в подсетях " + (j.subnets || []).join(", "));
+      })
+      .catch(function (e) { log("err", "поиск не удался: " + e.message); })
+      .finally(function () { b.disabled = false; b.textContent = "🔍 Найти карты в сети"; });
+  });
+
+  $("themeBtn").addEventListener("click", function () {
+    var cur = document.documentElement.getAttribute("data-theme");
+    var next = cur === "dark" ? "light" : (cur === "light" ? null : "dark");
+    if (next) document.documentElement.setAttribute("data-theme", next);
+    else document.documentElement.removeAttribute("data-theme");
+  });
+
+  // То же самое, что и в панели маршала: открытая из папки страница
+  // стучится в file:///api/state и не находит ничего.
+  if (location.protocol === "file:") {
+    var warn = document.createElement("div");
+    warn.style.cssText = "background:var(--critical);color:#fff;font-weight:600;" +
+      "padding:14px 16px;border-radius:var(--radius);margin-bottom:14px;line-height:1.5";
+    warn.innerHTML =
+      "Админка открыта как файл с диска — так она работать не может.<br>" +
+      "Закрой вкладку и открой <b>http://localhost:8080/admin</b> — " +
+      "адрес, который печатает marshal.py при запуске.";
+    document.body.insertBefore(warn, document.body.firstChild);
+    return;
+  }
+
+  refresh(); setInterval(refresh, 1000);
+  wsLog();  setInterval(wsLog, 1000);
+  log("t", "админ-панель загружена");
+})();
+</script>
+</body>
+</html>

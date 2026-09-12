@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Панель маршала — SmartKart</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:#f2f4f6; --surface:#ffffff; --ink:#14181d; --ink-2:#4d5762;
+    --muted:#7b8592; --line:#d7dce3; --line-soft:#e7ebf0;
+    --go:#1e7a44; --go-ink:#ffffff;
+    --ride:#1f6feb; --crawl:#b26b00; --stop:#b3261e; --off:#9aa3ae;
+    --test:#6d3fc4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:#0f1317; --surface:#191e25; --ink:#e6ebf1; --ink-2:#aeb8c4;
+      --muted:#7f8a97; --line:#2b333d; --line-soft:#222932;
+      --go:#3ea06a; --go-ink:#06180e;
+      --ride:#5b9cf8; --crawl:#e0a445; --stop:#e2796a; --off:#5d6773;
+      --test:#a78bfa;
+    }
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    margin:0; padding:0 16px 130px;
+    background:var(--page); color:var(--ink);
+    font:17px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  }
+  .wrap { max-width:1100px; margin:0 auto; }
+
+  header {
+    display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;
+    padding:20px 0 16px; border-bottom:1px solid var(--line); margin-bottom:20px;
+  }
+  h1 { font-size:21px; margin:0; letter-spacing:-0.01em; }
+  .now { margin-left:auto; color:var(--muted); font-size:15px; }
+  .now b { color:var(--ink-2); font-weight:600; font-variant-numeric:tabular-nums; }
+  .adminlink { color:var(--muted); text-decoration:none; font-size:14px;
+               border-bottom:1px dotted var(--muted); }
+
+  .conn { display:none; margin-bottom:16px; padding:12px 16px; border-radius:8px;
+          background:var(--stop); color:#fff; font-weight:600; }
+  .conn.show { display:block; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; }
+
+  .kart {
+    background:var(--surface); border:1px solid var(--line); border-left-width:5px;
+    border-radius:10px; padding:18px 18px 16px;
+    display:flex; flex-direction:column; gap:12px; min-height:238px;
+  }
+  .kart.idle    { border-left-color:var(--go); }
+  .kart.ride    { border-left-color:var(--ride); }
+  .kart.crawl   { border-left-color:var(--crawl); }
+  .kart.offline { border-left-color:var(--off); opacity:.6; }
+  .kart.stuck   { border-left-color:var(--stop); }
+  .kart.test    { border-left-color:var(--test); }
+
+  .alarm { background:var(--stop); color:#fff; font-weight:700;
+           border-radius:8px; padding:10px 12px; font-size:14.5px; }
+
+  .kart h2 { margin:0; font-size:24px; letter-spacing:-0.02em; }
+  .state { font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+  .state.idle{color:var(--go)} .state.ride{color:var(--ride)}
+  .state.crawl{color:var(--crawl)} .state.offline{color:var(--off)}
+  .state.stuck{color:var(--stop)} .state.test{color:var(--test)}
+
+  .timer { font-size:52px; font-weight:700; line-height:1;
+           font-variant-numeric:tabular-nums; letter-spacing:-0.03em; }
+  .timer small { display:block; font-size:14px; font-weight:500; letter-spacing:0;
+                 color:var(--muted); margin-top:6px; }
+
+  .times { display:flex; border-top:1px solid var(--line-soft);
+           border-bottom:1px solid var(--line-soft); padding:9px 0; }
+  .times div { flex:1; }
+  .times div + div { border-left:1px solid var(--line-soft); padding-left:12px; }
+  .times .k { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+              color:var(--muted); font-weight:600; }
+  .times .v { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums;
+              letter-spacing:-0.01em; }
+  .times .d { font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
+
+  .speed { display:flex; gap:6px; }
+  .speed button { flex:1; padding:9px 4px; font-size:13.5px; font-weight:600;
+                  border:1px solid var(--line); background:transparent; color:var(--ink-2); }
+  .speed button.sel { border-color:var(--ride); color:var(--ride);
+                      background:color-mix(in srgb, var(--ride) 10%, transparent); }
+
+  .presets { display:grid; grid-template-columns:repeat(auto-fit,minmax(66px,1fr)); gap:8px; }
+  button { font:inherit; cursor:pointer; border-radius:8px; border:1px solid var(--line);
+           background:var(--surface); color:var(--ink); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button:focus-visible { outline:3px solid var(--ride); outline-offset:2px; }
+
+  .presets button { padding:15px 4px; font-size:19px; font-weight:700;
+                    background:var(--go); border-color:var(--go); color:var(--go-ink); }
+  .presets button small { display:block; font-size:11px; font-weight:600; opacity:.85; }
+  .presets button:hover:not(:disabled) { filter:brightness(1.08); }
+
+  .testrow { display:grid; grid-template-columns:repeat(auto-fit,minmax(52px,1fr)); gap:6px; }
+  .testrow button { padding:8px 4px; font-size:16px; font-weight:700;
+                    border:1px dashed var(--test); color:var(--test);
+                    background:transparent; }
+  .testrow button small { display:block; font-size:10.5px; font-weight:600; opacity:.8; }
+  .testrow button:hover:not(:disabled) {
+    background:color-mix(in srgb, var(--test) 12%, transparent); }
+
+  .startblock { margin-top:auto; display:flex; flex-direction:column; gap:8px; }
+  .startblock .lab { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+                     color:var(--muted); font-weight:600; }
+
+  .stopbtn { margin-top:auto; padding:15px; font-size:17px; font-weight:700;
+             border-color:var(--stop); color:var(--stop); background:transparent; }
+  .stopbtn:hover { background:var(--stop); color:#fff; }
+
+  .offnote { color:var(--muted); }
+  .empty { color:var(--muted); padding:40px 0; text-align:center; }
+
+  .bar { position:fixed; left:0; right:0; bottom:0; padding:14px 16px;
+         background:var(--page); border-top:1px solid var(--line); }
+  .bar .inner { max-width:1100px; margin:0 auto; }
+  #stopall { width:100%; padding:20px; font-size:22px; font-weight:800; letter-spacing:.02em;
+             background:var(--stop); border-color:var(--stop); color:#fff; }
+  #stopall:active { transform:translateY(1px); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+
+    .speedslider { width: 100%; margin: 2px 0 0; accent-color: #5b8cff; height: 26px; }
+    .speedmarks { position: relative; height: 14px; margin: 0 0 8px;
+                  font-size: 11px; color: #8a93a6; }
+    .speedmarks span { position: absolute; transform: translateX(-50%);
+                       white-space: nowrap; color: #8a93a6; }
+  
+    .speedrow { display:flex; gap:8px; align-items:center; }
+    .speedok { flex:0 0 auto; padding:6px 14px; border-radius:8px;
+               border:1px solid #3a4256; background:#2b3346;
+               color:#dfe5f2; font-size:14px; }
+    .speedok:disabled { opacity:.35; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Панель маршала</h1>
+    <span class="now"><span id="today">—</span> · <b id="clock">—</b></span>
+    <a class="adminlink" href="/admin">админка</a>
+  </header>
+
+  <div class="conn" id="conn">Нет связи с сервером. Карты сейчас не управляются.</div>
+
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty">Ждём карты… Включи карт — он подключится сам.</div>
+
+</div>
+
+<div class="bar"><div class="inner">
+  <button id="stopall">⛔ СТОП ВСЕМ</button>
+</div></div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var CFG = { presets: [5, 10, 20, 30], test_presets: [1, 2, 3],
+              speeds: [{ name: "Обычный", val: 60 }] };
+  var CFGSTAMP = JSON.stringify(CFG);
+  var SKEW = 0;               // часы сервера минус часы браузера, секунды
+  var busy = {};
+  var pick = {};                                  // карт -> выбранная скорость
+
+  try { pick = JSON.parse(localStorage.getItem("mk_speed") || "{}") || {}; }
+  catch (e) { pick = {}; }
+  function remember() {
+    try { localStorage.setItem("mk_speed", JSON.stringify(pick)); } catch (e) {}
+  }
+  function speedOf(id) {
+    var sp = Array.isArray(CFG.speeds) ? CFG.speeds : [];
+    var d = Math.floor(sp.length / 2);
+    var v = pick[id];
+    return (typeof v === "number" && v >= 0 && v < sp.length) ? v : d;
+  }
+
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function mmss(s) { s = Math.max(0, s | 0); return Math.floor(s / 60) + ":" + pad(s % 60); }
+  function hhmm(t) {
+    return new Date(t * 1000).toLocaleTimeString("ru-RU",
+      { hour: "2-digit", minute: "2-digit" });
+  }
+  function dmon(t) {
+    return new Date(t * 1000).toLocaleDateString("ru-RU",
+      { day: "numeric", month: "short" });
+  }
+
+  function post(url, data) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(data || {}) })
+      .then(function (r) {
+        if (r.status === 403) { location.href = "/login"; throw new Error("вход"); }
+        return r.json();
+      });
+  }
+
+  function start(id, minutes, test) {
+    if (busy[id]) return;
+    busy[id] = true;
+    post("/api/start", { kart: id, minutes: minutes, speed: speedOf(id),
+                         test: !!test })
+      .then(function (j) { if (!j.ok) alert(j.error || "не получилось запустить"); })
+      .catch(function () { alert("сервер не ответил"); })
+      .finally(function () { busy[id] = false; refresh(); });
+  }
+
+  function stop(id) {
+    if (busy[id]) return;
+    busy[id] = true;
+    post("/api/stop", { kart: id })
+      .catch(function () { alert("сервер не ответил"); })
+      .finally(function () { busy[id] = false; refresh(); });
+  }
+
+  $("stopall").addEventListener("click", function () {
+    post("/api/stopall").then(refresh).catch(function () { alert("сервер не ответил"); });
+  });
+
+  var STATE = {
+    idle:    { cls: "idle",    word: "свободен" },
+    ride:    { cls: "ride",    word: "заезд" },
+    crawl:   { cls: "crawl",   word: "докатка" },
+    offline: { cls: "offline", word: "нет связи" },
+    stuck:   { cls: "stuck",   word: "едет сам" },
+    test:    { cls: "test",    word: "тест-драйв" }
+  };
+
+  function timesBlock(k, phase) {
+    var box = document.createElement("div");
+    box.className = "times";
+    var endT = phase === "crawl" ? k.t_end : k.t_paid;
+    [["запуск", k.t0], [phase === "crawl" ? "стоп" : "конец", endT]].forEach(function (p) {
+      var d = document.createElement("div");
+      d.innerHTML = '<div class="k">' + p[0] + "</div>" +
+                    '<div class="v">' + hhmm(p[1]) + "</div>" +
+                    '<div class="d">' + dmon(p[1]) + "</div>";
+      box.appendChild(d);
+    });
+    return box;
+  }
+
+  function speedTitle(v) {
+    if (v === undefined || v === null) return "";
+    if (v <= 0) return "стоп";
+    if (v <= 30) return "новичок · " + v;
+    if (v <= 50) return "средний · " + v;
+    if (v <= 75) return "быстро · " + v;
+    return String(v);
+  }
+
+  function speedRow(k) {
+    // Ползунок лимита. Значение живёт на сервере (karts.conf), своё на карт,
+    // и приезжает в состоянии как k.maxspeed. Отправляем ТОЛЬКО по кнопке ОК:
+    // иначе каждый сдвиг пальца — это HTTP-запрос к плате, а ESP8266 пачек
+    // не любит.
+    var wrap = document.createElement("div");
+    wrap.className = "startblock";
+
+    var lab = document.createElement("div");
+    lab.className = "lab";
+    lab.textContent = "скорость " + speedTitle(k.maxspeed);
+    wrap.appendChild(lab);
+
+    var row = document.createElement("div");
+    row.className = "speedrow";
+
+    var sl = document.createElement("input");
+    sl.type = "range"; sl.min = 0; sl.max = 100; sl.step = 5;
+    sl.value = (k.maxspeed === undefined ? 50 : k.maxspeed);
+    sl.className = "speedslider";
+
+    var ok = document.createElement("button");
+    ok.className = "speedok"; ok.textContent = "ОК"; ok.disabled = true;
+
+    sl.addEventListener("input", function () {
+      lab.textContent = "скорость " + speedTitle(+sl.value);
+      ok.disabled = (+sl.value === (k.maxspeed === undefined ? 50 : k.maxspeed));
+    });
+    ok.addEventListener("click", function () {
+      ok.disabled = true;
+      post("/api/speed", { kart: k.duuid || k.id, value: +sl.value });
+    });
+
+    row.appendChild(sl); row.appendChild(ok);
+    wrap.appendChild(row);
+
+    var marks = document.createElement("div");
+    marks.className = "speedmarks";
+    [[30, "новичок"], [50, "средний"], [75, "быстро"], [100, ""]]
+      .forEach(function (m) {
+        var t = document.createElement("span");
+        t.textContent = m[1] || m[0];
+        t.style.left = m[0] + "%";
+        marks.appendChild(t);
+      });
+    wrap.appendChild(marks);
+    return wrap;
+  }
+
+  function card(k) {
+    var phase = k.online ? k.phase : "offline";
+    var s = STATE[phase] || STATE.idle;
+    if (k.test && phase === "ride") s = STATE.test;
+    var el = document.createElement("div");
+    el.className = "kart " + s.cls + (k.stuck ? " stuck" : "");
+
+    // Карт, который едет вне заезда, не может называться свободным.
+    if (k.stuck && phase !== "offline") s = STATE.stuck;
+
+    var head = document.createElement("div");
+    var st = document.createElement("div");
+    st.className = "state " + s.cls;
+    st.textContent = s.word;
+    var h2 = document.createElement("h2");
+    h2.textContent = "Карт " + k.name;
+    head.appendChild(st); head.appendChild(h2);
+    el.appendChild(head);
+
+    if (k.stuck) {
+      var al = document.createElement("div");
+      al.className = "alarm";
+      al.textContent = "Карт едет вне заезда. Сервер шлёт «Стоп». Подойди к карту.";
+      el.appendChild(al);
+    }
+
+    if (phase === "offline") {
+      var riding = k.phase === "ride" || k.phase === "crawl";
+      var off = document.createElement("div");
+      off.className = "offnote";
+      off.textContent = riding
+        ? "Связи с картом нет, но заезд идёт: время у карта своё, "
+          + "он остановится сам. Сервер вернёт управление, как только "
+          + "карт появится."
+        : "Карт не отвечает. Проверь питание и Wi-Fi.";
+      el.appendChild(off);
+      // Карточка не исчезает вместе со связью — иначе таймер выглядит
+      // как совравший, а маршал не понимает, где карт и сколько ему ехать.
+      if (riding) {
+        el.appendChild(timerBlock(k, k.phase));
+        el.appendChild(timesBlock(k, k.phase));
+        el.appendChild(stopButton(k));
+      }
+      return el;
+    }
+
+    // Скорость правится и у стоящего карта, и у едущего.
+    el.appendChild(speedRow(k));
+
+    if (phase === "idle") {
+      var block = document.createElement("div");
+      block.className = "startblock";
+
+      var speedsArr = Array.isArray(CFG.speeds) ? CFG.speeds : [];
+      var presetsArr = Array.isArray(CFG.presets) ? CFG.presets : [10, 15, 20, 30];
+
+      var lab2 = document.createElement("div");
+      lab2.className = "lab"; lab2.textContent = "поехали на";
+      block.appendChild(lab2);
+
+      var box = document.createElement("div");
+      box.className = "presets";
+      presetsArr.forEach(function (m) {
+        var b = document.createElement("button");
+        b.innerHTML = m + "<small>минут</small>";
+        b.addEventListener("click", function () { start(k.id, m, false); });
+        box.appendChild(b);
+      });
+      block.appendChild(box);
+
+      // Тест-драйв: то же самое, но коротко и другим цветом, чтобы маршал
+      // не путал пробную поездку с оплаченным заездом.
+      var testArr = Array.isArray(CFG.test_presets) ? CFG.test_presets : [];
+      if (testArr.length) {
+        var lab3 = document.createElement("div");
+        lab3.className = "lab"; lab3.textContent = "тест-драйв";
+        block.appendChild(lab3);
+
+        var tbox = document.createElement("div");
+        tbox.className = "testrow";
+        testArr.forEach(function (m) {
+          var b = document.createElement("button");
+          b.innerHTML = m + "<small>мин</small>";
+          b.addEventListener("click", function () { start(k.id, m, true); });
+          tbox.appendChild(b);
+        });
+        block.appendChild(tbox);
+      }
+      el.appendChild(block);
+      return el;
+    }
+
+    el.appendChild(timerBlock(k, phase));
+    el.appendChild(timesBlock(k, phase));
+    el.appendChild(stopButton(k));
+    return el;
+  }
+
+  function timerBlock(k, phase) {
+    var t = document.createElement("div");
+    t.className = "timer";
+    var note = document.createElement("small");
+    note.textContent = phase === "crawl"
+      ? "время доехать до бокса"
+      : (k.test ? "тест-драйв, " + k.minutes + " мин"
+                : "осталось из " + k.minutes + " мин") +
+        (k.speed_name ? " · " + k.speed_name.toLowerCase() : "");
+    t.textContent = mmss(leftOf(k));
+    t.appendChild(note);
+    return t;
+  }
+
+  function stopButton(k) {
+    var b = document.createElement("button");
+    b.className = "stopbtn";
+    b.textContent = "Стоп";
+    b.addEventListener("click", function () { stop(k.id); });
+    return b;
+  }
+
+  var lastData = { karts: [] };
+  var cards = {};             // id -> {el, sig, k, timer}
+
+  // Сколько осталось. Считаем сами, а не берём готовое число из ответа:
+  // опрос идёт раз в секунду и иногда опаздывает, и табло тогда замирало
+  // и прыгало через две-три секунды. Часы браузера кассы могут отличаться
+  // от серверных, поэтому держим поправку SKEW, снятую с последнего ответа.
+  function leftOf(k) {
+    if (!k || k.phase === "idle") return 0;
+    var end = k.phase === "crawl" ? k.t_end : k.t_paid;
+    return Math.max(0, Math.round(end - (Date.now() / 1000 + SKEW)));
+  }
+
+  // Всё, от чего зависит вид карточки, кроме бегущих цифр на табло.
+  function sigOf(k) {
+    return [k.name, k.phase, k.online, k.stuck, k.test, k.minutes,
+            k.speed_name, k.t0, k.t_paid, k.t_end,
+            speedOf(k.id), CFGSTAMP].join("|");
+  }
+
+  function tickTimers() {
+    Object.keys(cards).forEach(function (id) {
+      var c = cards[id];
+      if (!c.timer || !c.k || c.k.phase === "idle") return;
+      var s = mmss(leftOf(c.k));
+      if (c.timer.firstChild && c.timer.firstChild.nodeValue !== s) {
+        c.timer.firstChild.nodeValue = s;
+      }
+    });
+  }
+
+  function render(j) {
+    lastData = j;
+    var now = (j.now || Date.now() / 1000);
+    SKEW = now - Date.now() / 1000;
+    $("clock").textContent = new Date(now * 1000)
+      .toLocaleTimeString("ru-RU", { hour12: false });
+    $("today").textContent = dmon(now);
+
+    var grid = $("grid");
+    var list = j.karts || [];
+    var seen = {};
+
+    // Карточки не сносим и не строим заново каждую секунду. Раньше здесь
+    // было grid.innerHTML = "", и вся сетка пересобиралась на каждом
+    // опросе: кнопки уезжали из-под пальца, карточки моргали. Теперь
+    // карточка живёт, пока её содержимое не изменилось по существу.
+    list.forEach(function (k) {
+      seen[k.id] = true;
+      var c = cards[k.id];
+      var sig = sigOf(k);
+      if (!c || c.sig !== sig) {
+        var el;
+        try { el = card(k); }
+        catch (e) {
+          // Один сломанный карт не должен гасить всю панель.
+          console.error("card() упал для карта", k && (k.id || k.duuid), e);
+          return;
+        }
+        if (c && c.el.parentNode === grid) grid.replaceChild(el, c.el);
+        else grid.appendChild(el);
+        c = cards[k.id] = { el: el, sig: sig, k: k,
+                            timer: el.querySelector(".timer") };
+      }
+      c.k = k;
+    });
+
+    Object.keys(cards).forEach(function (id) {
+      if (seen[id]) return;
+      if (cards[id].el.parentNode === grid) grid.removeChild(cards[id].el);
+      delete cards[id];
+    });
+
+    // Порядок держим стабильным: карт не должен переезжать на другое
+    // место, пока маршал целится в его кнопку.
+    list.forEach(function (k, i) {
+      var c = cards[k.id];
+      if (c && grid.children[i] !== c.el) {
+        grid.insertBefore(c.el, grid.children[i] || null);
+      }
+    });
+
+    tickTimers();
+    $("empty").style.display = list.length ? "none" : "block";
+  }
+
+  function refresh() {
+    return fetch("/api/state")
+      .then(function (r) {
+        if (r.status === 403) { location.href = "/login"; throw new Error("вход"); }
+        return r.json();
+      })
+      .then(function (j) { $("conn").classList.remove("show"); render(j); })
+      .catch(function () { $("conn").classList.add("show"); });
+  }
+
+  function loadConfig() {
+    return fetch("/api/config").then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) return;
+        // Сливаем с дефолтами, а не заменяем целиком: если сервер старой
+        // версии не прислал какое-то поле, панель не должна из-за этого
+        // остаться без карточек.
+        if (Array.isArray(j.speeds) && j.speeds.length) CFG.speeds = j.speeds;
+        if (Array.isArray(j.presets) && j.presets.length) CFG.presets = j.presets;
+        // Пустой список тест-драйва — это осознанное «выключено», не сбой.
+        if (Array.isArray(j.test_presets)) CFG.test_presets = j.test_presets;
+        CFGSTAMP = JSON.stringify(CFG);
+      })
+      .catch(function () {});
+  }
+
+  // Панель — это клиент сервера, а не самостоятельная страница. Открытая
+  // двойным щелчком из папки, она обращается к file:///api/state и, конечно,
+  // ничего не находит. Ловим это сразу и говорим прямо, а не «нет связи».
+  if (location.protocol === "file:") {
+    var warn = $("conn");
+    warn.innerHTML =
+      "Панель открыта как файл с диска — так она работать не может.<br>" +
+      "Закрой эту вкладку и открой адрес, который печатает marshal.py " +
+      "при запуске: <b>http://localhost:8080/</b>";
+    warn.classList.add("show");
+    $("empty").style.display = "none";
+    return;
+  }
+
+  loadConfig().then(function () {
+    refresh();
+    setInterval(refresh, 1000);
+    setInterval(tickTimers, 250);        // табло идёт ровно между опросами
+    setInterval(loadConfig, 30000);      // подхватываем правки из админки
+  });
+})();
+</script>
+</body>
+</html>

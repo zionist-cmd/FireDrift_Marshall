@@ -1,0 +1,6 @@
+logs/
+__pycache__/
+*.pyc
+*.bin
+marshal.conf
+karts.conf
