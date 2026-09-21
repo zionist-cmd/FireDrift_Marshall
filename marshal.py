@@ -56,10 +56,40 @@ NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # Зачем по часу: закрытый файл спокойно уезжает в OneDrive, а открытый
 # синхронизация дёргает.
 #
-# Логи старше LOG_KEEP_DAYS удаляются при запуске.
+# Старые логи удаляются сами, раз в час — при открытии каждого нового
+# файла. Два предела, срабатывает любой:
+#     LOG_KEEP_DAYS — не старше стольких дней
+#     LOG_MAX_MB    — все логи вместе не больше стольких мегабайт
+# Удаляются самые старые. Раньше чистка шла только при запуске сервера, а
+# он неделями работает без перезапуска — за две недели набегало 300 МБ.
 
 LOG_DIR = os.path.join(HERE, "logs")
-LOG_KEEP_DAYS = 14
+LOG_KEEP_DAYS = 7
+LOG_MAX_MB = 100
+
+
+def log_cleanup():
+    """Удалить самые старые логи, пока не уложимся в оба предела."""
+    try:
+        files = []
+        for name in os.listdir(LOG_DIR):
+            if name.startswith("marshal-") and name.endswith(".log"):
+                p = os.path.join(LOG_DIR, name)
+                files.append((os.path.getmtime(p), os.path.getsize(p), p))
+    except OSError:
+        return
+    files.sort()                                   # старые первыми
+    edge = time.time() - LOG_KEEP_DAYS * 86400
+    total = sum(sz for _, sz, _ in files)
+    limit = LOG_MAX_MB * 1024 * 1024
+    for mtime, size, path in files[:-1]:           # текущий файл не трогаем
+        if mtime >= edge and total <= limit:
+            break
+        try:
+            os.remove(path)
+            total -= size
+        except OSError:
+            pass
 LOG_QUEUE_MAX = 20000
 
 
@@ -138,6 +168,7 @@ class _Tee(object):
                         fh = open(os.path.join(LOG_DIR, "marshal-%s.log" % h),
                                   "a", encoding="utf-8")
                         hour = h
+                        log_cleanup()          # раз в час, не при каждой строке
                     fh.write("%s %s\n" % (ts, line))
                 except OSError:
                     fh, hour = None, None      # попробуем на следующей строке
@@ -171,13 +202,9 @@ def no_quick_edit():
 def start_file_log():
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
-        edge = time.time() - LOG_KEEP_DAYS * 86400
-        for name in os.listdir(LOG_DIR):
-            path = os.path.join(LOG_DIR, name)
-            if name.startswith("marshal-") and os.path.getmtime(path) < edge:
-                os.remove(path)
     except OSError:
         pass
+    log_cleanup()
     no_quick_edit()
     sys.stdout = _Tee(sys.stdout)
     sys.stderr = _Tee(sys.stderr)
@@ -416,6 +443,7 @@ def read_names():
     out = {k[5:].strip(): v.strip() for k, v in CONF.items()
            if k.startswith("kart.")}
     speed = {}
+    crawl = {}
     try:
         with open(NAMES_PATH, encoding="utf-8") as fh:
             for line in fh:
@@ -431,27 +459,37 @@ def read_names():
                         speed[key[:-6]] = max(0, min(100, int(val)))
                     except ValueError:
                         pass
+                elif key.endswith(".crawl"):
+                    try:
+                        crawl[key[:-6]] = max(0, min(100, int(val)))
+                    except ValueError:
+                        pass
                 else:
                     out[key] = val         # файл имён главнее старого конфига
     except OSError:
         pass
-    return out, speed
+    return out, speed, crawl
 
 
-def write_names(names, speed=None):
+def write_names(names, speed=None, crawl=None):
     if speed is None:
         speed = KART_SPEED
+    if crawl is None:
+        crawl = KART_CRAWL
     with names_lock:
         out = ["# Карты парка. Этот файл при обновлении сервера не заменяется.",
                "#   <DUUID>       = номер на кузове",
                "#   <DUUID>.speed = лимит скорости 0..100",
+               "#   <DUUID>.crawl = лимит докатки 0..100 (нет строки — общий из marshal.conf)",
                "# Правится из панели и админки.",
                ""]
-        for duuid in sorted(set(list(names) + list(speed))):
+        for duuid in sorted(set(list(names) + list(speed) + list(crawl))):
             if str(names.get(duuid, "")).strip():
                 out.append("%s = %s" % (duuid, names[duuid]))
             if duuid in speed:
                 out.append("%s.speed = %d" % (duuid, speed[duuid]))
+            if duuid in crawl:
+                out.append("%s.crawl = %d" % (duuid, crawl[duuid]))
         out.append("")
         tmp = NAMES_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -459,12 +497,22 @@ def write_names(names, speed=None):
         os.replace(tmp, NAMES_PATH)
 
 
-KART_NAMES, KART_SPEED = read_names()
+KART_NAMES, KART_SPEED, KART_CRAWL = read_names()
 
 
 def kart_speed(duuid):
     """Лимит скорости конкретного карта. Нет своего — берём общий."""
     return KART_SPEED.get(str(duuid), S["speed_default"])
+
+
+def kart_crawl(duuid):
+    """Лимит докатки конкретного карта. Нет своего — общий speed_crawl.
+
+    Свой нужен потому, что контроллеры на картах откалиброваны по-разному
+    и стоят в разных режимах переключателя 高中低: один и тот же процент
+    на одном карте ползёт, на другом едет заметно быстрее.
+    """
+    return KART_CRAWL.get(str(duuid), S["speed_crawl"])
 
 # Куда сервер стучится к плате по HTTP, если её собственный адрес ему
 # недоступен. Нужно, когда карты за NAT и до них пробрасываются порты:
@@ -1161,7 +1209,7 @@ def ride_resume(kart):
         # Карт стоит, а заезд по нашим часам ещё идёт: значит он
         # перезагрузился и потерял разрешение, лимит и свой таймер.
         # Вот теперь заезд действительно надо вернуть.
-        speed = (S["speed_crawl"] if phase == "crawl"
+        speed = (kart_crawl(k.get("duuid")) if phase == "crawl"
                  else kart_speed(k.get("duuid")))
         drive_gate(k, True)
         if S["drive_settle"]:
@@ -1255,7 +1303,7 @@ def ride_renew(kart):
         # в памяти по-прежнему старая и сказала бы, что всё уже стоит.
         k = live_kart(kart)
         crawl = (k.get("ride") or {}).get("phase") == "crawl"
-        speed = S["speed_crawl"] if crawl else kart_speed(k.get("duuid"))
+        speed = kart_crawl(k.get("duuid")) if crawl else kart_speed(k.get("duuid"))
         if crawl:
             want_set(k, light=False)
         if S["speed_http"]:
@@ -1350,7 +1398,7 @@ def crawl_kick(kart, again=False):
         k = live_kart(kart)
         if (k.get("ride") or {}).get("phase") != "crawl":
             return
-        speed = S["speed_crawl"]
+        speed = kart_crawl(k.get("duuid"))
         speed_gate(k, False)              # подсветка гаснет
         k = live_kart(kart)
         set_speed_http(k, speed)          # и лимит падает до докаточного
@@ -1983,6 +2031,34 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, {"ok": True, "offline": True})
             return self.send_json(200, {"ok": False, "error": "карт не на связи"})
 
+        if path == "/api/admin/crawl":
+            # Лимит докатки для конкретного карта. value = 0..100,
+            # value = null или "" — вернуть карт на общий speed_crawl.
+            if not self.need("admin"):
+                return
+            d = self.body_json()
+            duuid = str(d.get("kart") or "").strip()
+            if not duuid:
+                return self.send_json(400, {"ok": False, "error": "нет карта"})
+            raw = d.get("value")
+            if raw is None or str(raw).strip() == "":
+                KART_CRAWL.pop(duuid, None)
+                note = "общий (%d%%)" % S["speed_crawl"]
+            else:
+                try:
+                    val = max(0, min(100, int(raw)))
+                except (TypeError, ValueError):
+                    return self.send_json(400, {"ok": False, "error": "нужно число 0..100"})
+                KART_CRAWL[duuid] = val
+                note = "%d%%" % val
+            try:
+                write_names(KART_NAMES, KART_SPEED, KART_CRAWL)
+            except OSError as e:
+                wslog("sys", duuid, "не смог сохранить докатку: %s" % e)
+            wslog("sys", duuid, "лимит докатки: %s" % note)
+            return self.send_json(200, {"ok": True, "crawl": kart_crawl(duuid),
+                                        "own": duuid in KART_CRAWL})
+
         if path == "/api/speed":
             # Ползунок скорости в панели. Значение 0..100 сохраняется
             # в karts.conf на этот карт и применяется сразу, если он едет.
@@ -2263,6 +2339,8 @@ def state_item(k, now, with_status, online):
         "online": bool(online) and (now - k.get("seen", 0)) < 20,
         "gone": round(now - k["gone"], 1) if k.get("gone") else 0,
         "maxspeed": kart_speed(k.get("duuid")),
+        "crawl": kart_crawl(k.get("duuid")),
+        "crawl_own": str(k.get("duuid")) in KART_CRAWL,
     }
     if with_status:
         item["status"] = st
@@ -2304,7 +2382,8 @@ def api_state(with_status):
         items.append(state_item(g, now, with_status, False))
 
     items.sort(key=lambda d: (len(d["name"]), d["name"]))
-    return {"ok": True, "karts": items, "now": now}
+    return {"ok": True, "karts": items, "now": now,
+            "speed_crawl": S["speed_crawl"]}
 
 
 # ================================================================== настройки

@@ -190,6 +190,14 @@
     </div>
 
     <div style="margin-bottom:14px">
+      <div class="sub" style="margin-bottom:7px">
+        Докатка по картам — свой лимит, если общий на этом карте едет слишком
+        быстро или стоит. Пусто — берётся общий. Сохраняется сразу по ОК.
+      </div>
+      <div id="crawlKarts"><span class="sub">карты появятся, когда подключатся</span></div>
+    </div>
+
+    <div style="margin-bottom:14px">
       <div class="sub" style="margin-bottom:7px">Имена картов — номер на кузове напротив DUUID</div>
       <div id="sKarts"></div>
       <button id="sAddKart" style="margin-top:8px">+ карт</button>
@@ -280,8 +288,8 @@
       </div>
 
       <div class="row" style="margin-bottom:9px">
-        <label class="sub" for="hSpeed" style="width:150px">maxSpeed по HTTP (0..255)</label>
-        <input type="number" id="hSpeed" min="0" max="255" value="40" style="width:90px">
+        <label class="sub" for="hSpeed" style="width:150px">maxSpeed по HTTP (0..100)</label>
+        <input type="number" id="hSpeed" min="0" max="100" value="20" style="width:90px">
         <button id="bHttpSpeed">Записать в плату</button>
         <span class="sub">мимо вебсокета, на месте. Обычный путь — <code>MaxSpeed</code> выше</span>
       </div>
@@ -371,6 +379,53 @@
 
   function mmss(s) { s = Math.max(0, s|0); return Math.floor(s/60) + ":" + String(s%60).padStart(2,"0"); }
 
+
+  // ---------------------------------------------------- докатка по картам
+  // Блок строится заново только когда меняется состав картов, а не каждую
+  // секунду: иначе поле ввода стиралось бы прямо под пальцами.
+  var crawlSig = "";
+  function renderCrawl(karts, global) {
+    var sig = karts.map(function (k) { return k.duuid + ":" + k.name + ":" + k.crawl + ":" + k.crawl_own; }).join("|");
+    if (sig === crawlSig) return;
+    crawlSig = sig;
+    var box = $("crawlKarts");
+    box.innerHTML = "";
+    karts.filter(function (k) { return k.duuid; }).forEach(function (k) {
+      var row = document.createElement("div");
+      row.className = "row";
+      row.style.marginBottom = "6px";
+      var lab = document.createElement("span");
+      lab.style.width = "150px"; lab.style.display = "inline-block";
+      lab.innerHTML = "<b>Карт " + k.name + "</b>";
+      var inp = document.createElement("input");
+      inp.type = "number"; inp.min = 0; inp.max = 100; inp.style.width = "90px";
+      inp.placeholder = "общий " + global;
+      inp.value = k.crawl_own ? k.crawl : "";
+      var ok = document.createElement("button");
+      ok.textContent = "ОК";
+      var note = document.createElement("span");
+      note.className = "sub";
+      note.textContent = k.crawl_own ? "свой" : "общий";
+      ok.addEventListener("click", function () {
+        var v = inp.value.trim();
+        ok.disabled = true;
+        fetch("/api/admin/crawl", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kart: k.duuid, value: v === "" ? null : parseInt(v, 10) }) })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            note.textContent = j.ok ? (j.own ? "свой, сохранено" : "общий, сохранено")
+                                    : ("ошибка: " + (j.error || ""));
+            crawlSig = "";            // перерисовать с новым значением
+          })
+          .catch(function () { note.textContent = "нет связи с сервером"; })
+          .then(function () { ok.disabled = false; });
+      });
+      row.appendChild(lab); row.appendChild(inp); row.appendChild(ok); row.appendChild(note);
+      box.appendChild(row);
+    });
+  }
+
   function fillSelect(sel, karts, keepAll) {
     var cur = sel.value;
     sel.innerHTML = keepAll ? '<option value="*">всех картов</option>' : "";
@@ -413,6 +468,7 @@
       return r.json();
     }).then(function (j) {
       var karts = j.karts || [];
+      try { renderCrawl(karts, (j.speed_crawl !== undefined ? j.speed_crawl : "")); } catch (e) {}
       var tbody = $("kartTable").querySelector("tbody");
       tbody.innerHTML = "";
       $("noKarts").style.display = karts.length ? "none" : "block";
@@ -611,7 +667,7 @@
 
   $("bHttpSpeed").addEventListener("click", function () {
     var v = parseInt($("hSpeed").value, 10);
-    if (isNaN(v) || v < 0 || v > 255) { log("err", "maxSpeed вне 0..255"); return; }
+    if (isNaN(v) || v < 0 || v > 100) { log("err", "maxSpeed вне 0..100"); return; }
     httpCall("maxSpeed?maxSpeed=" + v, "maxSpeed=" + v);
   });
 
