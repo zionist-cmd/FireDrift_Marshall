@@ -1,6 +1,22 @@
 logs/
 __pycache__/
 *.pyc
-*.bin
+
+# Пароли и данные площадки — только локально, в репозиторий не попадают.
+# Их раздают отдельно (см. docs/bezopasnost.md, раздел «Доступы»).
 marshal.conf
 karts.conf
+*доступ*
+*secret*
+
+# Образы и дампы прошивки: внутри имя и пароль Wi-Fi площадки.
+*.bin
+all_strings.txt
+
+# KiCad: локальные и временные файлы
+*.kicad_prl
+*-backups/
+_autosave-*
+*.lck
+fp-info-cache
+.history/

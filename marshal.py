@@ -220,9 +220,10 @@ DEFAULT_CONF = """\
 # ============================================================
 
 # --- доступ -------------------------------------------------
-# Админ-панель (http://<адрес>:8080/admin). Смени пароль!
+# Админ-панель (http://<адрес>:8080/admin). Пароль сгенерирован
+# случайно при первом запуске. Сменить можно здесь же.
 admin_user = admin
-admin_pass = CHANGE_ME
+admin_pass = @ADMIN_PASS@
 
 # Пароль на казуальную панель маршала.
 # Пусто = вход без пароля (удобно, если ПК стоит за стойкой).
@@ -295,6 +296,8 @@ crawl_mode = restart
 status_period = 6
 
 # --- веб-морда карта (нужна только админке для наладки) ------
+# Заводские логин и пароль прошивки Sonoff_WiFi_switch, одинаковые на
+# всех платах. Если на картах их меняли — впишите свои.
 kart_user = admin
 kart_pass = esp8266esp
 
@@ -308,9 +311,11 @@ conf_lock = threading.Lock()
 
 def read_conf():
     if not os.path.exists(CONF_PATH):
+        # Пароль по умолчанию в открытом коде — это пароль для всех. Поэтому
+        # каждый сервер получает свой, случайный. В лог его не печатаем.
         with open(CONF_PATH, "w", encoding="utf-8") as fh:
-            fh.write(DEFAULT_CONF)
-        print("  Создан %s — там пароль, смени его." % CONF_PATH)
+            fh.write(DEFAULT_CONF.replace("@ADMIN_PASS@", secrets.token_urlsafe(9)))
+        print("  Создан %s — пароль админки в строке admin_pass." % CONF_PATH)
     conf = {}
     with open(CONF_PATH, encoding="utf-8") as fh:
         for line in fh:
