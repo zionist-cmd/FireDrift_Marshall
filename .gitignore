@@ -6,6 +6,8 @@ __pycache__/
 # Их раздают отдельно (см. docs/bezopasnost.md, раздел «Доступы»).
 marshal.conf
 karts.conf
+rides-state.json
+rides-state.json.tmp
 *доступ*
 *secret*
 

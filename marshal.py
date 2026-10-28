@@ -177,6 +177,13 @@ class _Tee(object):
                     fh.flush()
             except OSError:
                 pass
+            # Под приложением клуба вывод уходит не в консоль, а в трубу, и
+            # без flush Python копит его кусками по 8 КБ: 10.10 в fdcrm.log
+            # три минуты работы маршала легли одной пачкой с одним временем.
+            try:
+                console.flush()
+            except (AttributeError, OSError, ValueError):
+                pass
 
 
 def no_quick_edit():
@@ -206,6 +213,15 @@ def start_file_log():
         pass
     log_cleanup()
     no_quick_edit()
+    # В трубу (приложение клуба читает вывод маршала в свой журнал) Python
+    # на Windows пишет в cp1251, и кириллица в fdcrm.log превращалась в
+    # мусор, а символы вне cp1251 строку роняли целиком. Консоль не трогаем:
+    # в окно Windows Python и так пишет юникодом.
+    try:
+        if not sys.__stdout__.isatty():
+            sys.__stdout__.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     sys.stdout = _Tee(sys.stdout)
     sys.stderr = _Tee(sys.stderr)
 
@@ -294,6 +310,13 @@ crawl_mode = restart
 # нужна только для экрана; ехать карту она не помогает, а лишние
 # запросы к ESP8266 обрывают связь. Меньше 2 нельзя, по умолчанию 6.
 status_period = 6
+
+# --- журнал роутера -----------------------------------------
+# Keenetic умеет слать свой журнал по syslog. Впишите порт (обычно 514) и
+# включите на роутере удалённый syslog на адрес кассы: строки роутера
+# лягут в лог сервера рядом с обрывами картов. 0 — не слушать.
+syslog_port = 0
+syslog_from = 192.168.1.1
 
 # --- веб-морда карта (нужна только админке для наладки) ------
 # Заводские логин и пароль прошивки Sonoff_WiFi_switch, одинаковые на
@@ -416,6 +439,12 @@ S = {
     "status_period": max(2, min(60, cint("status_period", 6))),
     "crawl_mode": ("live" if cstr("crawl_mode", "restart").strip().lower()
                    == "live" else "restart"),
+    # Журнал роутера по syslog: Keenetic шлёт строки на этот UDP-порт, сервер
+    # кладёт их в свой лог рядом с обрывами. 0 — не слушать.
+    "syslog_port": max(0, min(65535, cint("syslog_port", 0))),
+    # С каких адресов принимать, через запятую. Пусто — с любых.
+    "syslog_from": [a.strip() for a in cstr("syslog_from", "192.168.1.1").split(",")
+                    if a.strip()],
 }
 # ---------------------------------------------------------------- имена картов
 #
@@ -644,28 +673,61 @@ def ws_accept_key(key):
     return base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
 
 
+# Самый длинный кадр от платы — полный статус, около полутора килобайт.
+# Всё, что длиннее, — не кадр, а мусор: поток сбился, и заголовок прочитан
+# из середины чужих данных. По логам 25-28.10 так начинался каждый пятый
+# обрыв: плата присылала статус, обрезанный после ~260 байт, дальше шёл
+# мусор, и 26.10 такой «кадр» заказал гигабайты и уронил поток с
+# MemoryError. Разбирать дальше бессмысленно — плата всё равно
+# переподключится, поэтому соединение закрываем сразу и пишем почему.
+WS_MAX_FRAME = 64 * 1024
+
+
+class WsBroken(ValueError):
+    """Поток вебсокета сломан: читать дальше нечего."""
+
+
 def ws_read_frame(rfile):
+    """Один кадр от платы. None — плата закрыла соединение между кадрами."""
     hdr = rfile.read(2)
-    if not hdr or len(hdr) < 2:
+    if not hdr:
         return None
+    if len(hdr) < 2:
+        raise WsBroken("соединение оборвалось посреди заголовка кадра")
     b1, b2 = hdr[0], hdr[1]
     opcode, masked, ln = b1 & 0x0F, b2 & 0x80, b2 & 0x7F
+    # Расширений мы не согласовывали, значит биты RSV всегда нули, а коды
+    # 3-7 и 0xB-0xF не бывают вовсе. Встретились — заголовок прочитан не
+    # с того места.
+    if b1 & 0x70 or 3 <= opcode <= 7 or opcode > 0xA:
+        raise WsBroken("мусор вместо заголовка кадра (%02x %02x)" % (b1, b2))
     if ln == 126:
         ext = rfile.read(2)
         if len(ext) < 2:
-            return None
+            raise WsBroken("соединение оборвалось посреди заголовка кадра")
         ln = struct.unpack(">H", ext)[0]
     elif ln == 127:
         ext = rfile.read(8)
         if len(ext) < 8:
-            return None
+            raise WsBroken("соединение оборвалось посреди заголовка кадра")
         ln = struct.unpack(">Q", ext)[0]
+    if ln > WS_MAX_FRAME:
+        raise WsBroken("кадр длиной %d байт — поток сбился" % ln)
+    # Служебные кадры (close, ping, pong) по стандарту не длиннее 125 байт.
+    # Длиннее — значит мусор, который случайно похож на close: раньше такой
+    # «close» молча закрывал соединение, и в логе причины не было.
+    if opcode >= 0x8 and ln > 125:
+        raise WsBroken("служебный кадр %x длиной %d байт — поток сбился"
+                       % (opcode, ln))
     mask = rfile.read(4) if masked else None
+    if masked and len(mask) < 4:
+        raise WsBroken("соединение оборвалось посреди заголовка кадра")
     data = b""
     while len(data) < ln:
         chunk = rfile.read(ln - len(data))
         if not chunk:
-            return None
+            raise WsBroken("соединение оборвалось посреди кадра (%d из %d байт)"
+                           % (len(data), ln))
         data += chunk
     if mask:
         data = bytes(c ^ mask[i % 4] for i, c in enumerate(data))
@@ -702,6 +764,19 @@ def ws_send(kart, obj):
         return False
     wslog("out", kart["id"], text)
     return True
+
+
+def ws_os_why(e):
+    """Причина обрыва по ошибке сокета — словами, а не номером Windows."""
+    win = getattr(e, "winerror", None)
+    if isinstance(e, ConnectionResetError) or win == 10054:
+        return "соединение сброшено со стороны платы (WinError 10054)"
+    if isinstance(e, ConnectionAbortedError) or win == 10053:
+        return ("Windows оборвала соединение сама (WinError 10053): плата "
+                "перестала подтверждать данные или у кассы пропала сеть")
+    if isinstance(e, TimeoutError) or win == 10060:
+        return "плата перестала подтверждать данные (таймаут TCP)"
+    return "ошибка сети: %s" % e
 
 
 def find_kart(key):
@@ -862,6 +937,11 @@ def want_loop():
                     continue                      # не потеряли — досылаем позже
                 if not kart_ip(kart) or not kart.get("status"):
                     continue      # телеметрии ещё не было — сравнивать не с чем
+                if not kart.get("status_at"):
+                    # Карт переподключился, но по новому соединению ещё не
+                    # ответил ни разу: телеметрия в памяти — от прошлого, а
+                    # HTTP в такую минуту чаще роняет плату, чем доходит.
+                    continue
                 n = int(w.get("tries", 0))
                 if n >= WANT_TRIES:
                     field = ("разрешение движения" if w.get("gate") is not None
@@ -1077,6 +1157,23 @@ def drive_gate(kart, allow, wait=True):
         threading.Thread(target=lambda: send_gate_now(kart, allow),
                          daemon=True).start()
 
+
+def idle_settle(kart):
+    """Свободный карт после переподключения: разоружить и зажечь подсветку.
+
+    Зовётся в своём потоке по первому ответу на Status по новому соединению.
+    Телеметрия к этому моменту свежая, поэтому запрос уходит, только если
+    карт на самом деле не в нужном виде, а плата уже доказала, что жива.
+    Здоровая плата отвечает за 0,1 с (86% подключений 25-28.10), так что
+    подсветка загорается почти сразу.
+    """
+    k = live_kart(kart)
+    if (k.get("ride") or {}).get("phase", "idle") != "idle":
+        return                    # пока ждали ответа, начался или вернулся заезд
+    drive_gate(k, False)
+    speed_gate(k, True)
+
+
 def send_speed_now(kart, pct):
     """Один запрос лимита. Ноль = снять разрешение, это настоящая пауза."""
     ip = kart_ip(kart)
@@ -1225,7 +1322,14 @@ def ride_resume(kart):
         if rest is None or rest < 3:
             return
         k = live_kart(kart)
-        ws_send(k, {"Command": "Start", "Length": rest})
+        # Кусок — до конца ВСЕГО заезда, вместе с докаткой, как при старте.
+        # Раньше плате уходил только остаток оплаты: она гасла ровно на его
+        # конце, и докатка начиналась со стоящего карта.
+        r2 = k.get("ride") or {}
+        piece = chunk_len(max(rest, int(r2.get("t_end", 0) - time.time())))
+        ws_send(k, {"Command": "Start", "Length": piece})
+        if r2.get("phase") == phase:
+            r2["chunk_end"] = time.time() + piece
         time.sleep(0.3)
         k = live_kart(kart)
         if phase == "crawl":
@@ -1378,6 +1482,7 @@ def ride_start(kart, minutes, speed_idx, test=False):
     kart["ride"].update({"t0": now, "t_paid": now + seconds,
                          "t_end": now + seconds + S["crawl_seconds"],
                          "chunk_end": now + piece})
+    rides_save_safe()
     # Докатка у тест-драйва такая же: она нужна, чтобы человек не встал
     # посреди трассы, а это не зависит от того, платный заезд или пробный.
     wslog("sys", kart["id"], "%s %d мин, скорость «%s» (%d)%s"
@@ -1416,7 +1521,12 @@ def crawl_kick(kart, again=False):
 def ride_crawl(kart):
     r = kart.get("ride") or dict(IDLE)
     r["phase"] = "crawl"
-    r["t_end"] = time.time() + S["crawl_seconds"]
+    # Докатка считается от конца оплаты, а не от минуты, когда сервер её
+    # заметил: карт, вернувшийся на связь (или сервер, поднятый после
+    # перезапуска) уже после конца оплаты, получает остаток докатки, а не
+    # целую новую.
+    now = time.time()
+    r["t_end"] = min(now, r.get("t_paid") or now) + S["crawl_seconds"]
     kart["ride"] = r
     r["crawl_tries"] = 0
     r["crawl_sent"] = time.time()
@@ -1439,6 +1549,119 @@ def ride_event(kart, kind, **extra):
     with events_lock:
         ride_events.append(e)
         del ride_events[:-EVENTS_MAX]
+
+
+# ============================================================ заезды на диске
+#
+# 10.10 приложение клуба закрыли посреди восьми заездов. Маршал погас вместе
+# с ним и поднялся без памяти: вернувшиеся карты были для него свободными,
+# и он снял с них разрешение движения на седьмой минуте оплаченных десяти.
+# Правило клуба: перезапуск любой части системы оплаченное время не теряет.
+#
+# Поэтому идущие заезды и хвост журнала событий лежат в rides-state.json
+# рядом с marshal.conf. Файл пишется, только когда что-то поменялось
+# (заезд начался, кончился, сменил фазу или кусок), целиком через .tmp и
+# замену: оборванная запись оставляет прежний файл, а не половину.
+#
+# При старте живые заезды кладутся в слепки — так же, как у карта,
+# потерявшего связь, — и вернувшийся карт забирает свой заезд обычным
+# восстановлением. Время абсолютное: простой сервера не дарится и не
+# возвращается, а заезд, чей конец уже прошёл, не поднимается вовсе.
+STATE_PATH = os.path.join(HERE, "rides-state.json")
+STATE_EVENTS_KEEP = 1800         # хвост журнала для CRM, секунд
+state_lock = threading.Lock()
+_state = {"last": None, "err_at": 0}
+
+
+def rides_save():
+    """Записать идущие заезды, если они изменились с прошлой записи."""
+    now = time.time()
+    rides = {}
+    with karts_lock:
+        for duuid, g in ghosts.items():
+            if ride_alive(g.get("ride"), now):
+                rides[duuid] = dict(g["ride"])
+        for k in karts.values():
+            duuid = str(k.get("duuid") or "")
+            if duuid and ride_alive(k.get("ride"), now):
+                rides[duuid] = dict(k["ride"])
+    with events_lock:
+        evs = [e for e in ride_events if e["at"] > now - STATE_EVENTS_KEEP]
+    body = {"rides": rides, "events": evs}
+    sig = json.dumps(body, sort_keys=True)
+    with state_lock:
+        if sig == _state["last"]:
+            return
+        tmp = STATE_PATH + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(dict(body, saved=now), fh, ensure_ascii=False)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, STATE_PATH)
+            _state["last"] = sig
+        except OSError as e:
+            if now - _state["err_at"] > 60:
+                _state["err_at"] = now
+                wslog("sys", "*", "ВНИМАНИЕ: заезды не записаны в %s: %s — "
+                      "после перезапуска сервера они не вернутся" % (STATE_PATH, e))
+
+
+def rides_save_safe():
+    # Зовётся из потока заездов: исключение здесь не должно его убить.
+    try:
+        rides_save()
+    except Exception as e:
+        try:
+            wslog("sys", "*", "запись заездов: %s" % e)
+        except Exception:
+            pass
+
+
+def rides_load():
+    """Вернуть в слепки заезды, которые шли до перезапуска сервера."""
+    try:
+        with open(STATE_PATH, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except FileNotFoundError:
+        d = {}                    # первый запуск: строка в журнале всё равно нужна
+    except (OSError, ValueError) as e:
+        print("  ! %s не прочитан: %s — заезды не возвращены" % (STATE_PATH, e))
+        return
+    now = time.time()
+    back = []
+    rides = d.get("rides") if isinstance(d, dict) else None
+    for duuid, r in (rides if isinstance(rides, dict) else {}).items():
+        if not isinstance(r, dict) or not ride_alive(r, now):
+            continue
+        # Часы компьютера могли прыгнуть назад: заезд не может кончаться
+        # позже, чем через всю свою длину с докаткой от этой минуты.
+        try:
+            full = int(r.get("minutes") or 0) * 60 + S["crawl_seconds"] + 60
+            if float(r.get("t_end") or 0) - now > full:
+                continue
+        except (TypeError, ValueError):
+            continue
+        duuid = str(duuid)
+        ghosts[duuid] = {
+            "id": duuid, "duuid": duuid,
+            "name": KART_NAMES.get(duuid, ""), "addr": "",
+            "ride": r, "status": {},
+            "seen": float(d.get("saved") or now), "gone": now,
+        }
+        back.append("%s (%s, ещё %d с)" % (KART_NAMES.get(duuid) or duuid,
+                                          r.get("phase"), int(r["t_end"] - now)))
+    evs = d.get("events") if isinstance(d, dict) else None
+    if isinstance(evs, list):
+        with events_lock:
+            ride_events[:] = [e for e in evs if isinstance(e, dict)
+                              and isinstance(e.get("at"), (int, float))
+                              and e["at"] > now - STATE_EVENTS_KEEP][-EVENTS_MAX:]
+    if back:
+        print("  Заезды до перезапуска: возвращено %d — %s. Карты заберут их "
+              "при подключении." % (len(back), ", ".join(back)))
+    else:
+        print("  Заезды до перезапуска: идущих не было.")
 
 
 def ride_finish(kart, why="заезд закончен"):
@@ -1464,6 +1687,7 @@ def ride_finish(kart, why="заезд закончен"):
     kart["ride_ended"] = time.time()
     kart["drive_since"] = 0
     ghost_drop(kart.get("duuid"))
+    rides_save_safe()             # снятый заезд не должен ожить после перезапуска
     wslog("sys", kart["id"], why)
 
 
@@ -1577,6 +1801,10 @@ def ride_ticker():
                     kart["drive_since"] = 0
                     kart["stuck"] = False
 
+        # Раз в секунду: если заезды поменялись (докатка, продление, стоп
+        # карта без связи), файл перезаписывается; если нет — ни одной записи.
+        rides_save_safe()
+
 
 def status_poller():
     """Телеметрия по вебсокету.
@@ -1595,6 +1823,43 @@ def status_poller():
         for kart in ks:
             ws_send(kart, {"Command": "Status"})
             time.sleep(gap)
+
+
+def syslog_listener():
+    """Журнал роутера — в лог сервера, с той же меткой времени.
+
+    Главный открытый вопрос по обрывам: карт потерял Wi-Fi или только
+    вебсокет. Ответ — в журнале Keenetic: в секунду обрыва роутер либо
+    пишет отключение платы по её MAC (пропал Wi-Fi), либо молчит (Wi-Fi
+    держался, сломалось выше). Но свой журнал роутер держит в памяти,
+    недолго и до перезагрузки. Поэтому принимаем его по syslog и пишем
+    рядом с обрывами — сверка по секундам получается сама.
+
+    В панель эти строки не идут: роутер болтлив, а журнал вебсокета там
+    для маршала.
+    """
+    port = S["syslog_port"]
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind(("0.0.0.0", port))
+    except OSError as e:
+        print("  ! журнал роутера: порт UDP %d не открылся: %s" % (port, e))
+        return
+    allowed = set(S["syslog_from"])
+    while True:
+        try:
+            data, addr = s.recvfrom(8192)
+        except OSError:
+            time.sleep(1.0)
+            continue
+        if allowed and addr[0] not in allowed:
+            continue
+        text = data.decode("utf-8", "replace").strip()
+        # <PRI> в начале строки — служебный номер syslog, читать его незачем.
+        m = re.match(r"<\d{1,3}>\s*", text)
+        if m:
+            text = text[m.end():]
+        print("  RT  %-14s %s" % (addr[0], text[:1000]))
 
 
 # ======================================================================== вход
@@ -2202,15 +2467,22 @@ class Handler(BaseHTTPRequestHandler):
         wslog("sys", kart_key, "карт подключился (%s)" % addr)
         ws_send(kart, {"Command": "Status"})
 
+        # Почему соединение кончилось. Раньше все обрывы выглядели в логе
+        # одинаково, и по нему нельзя было отличить плату, закрывшую сокет
+        # сама, от пропавшей сети у кассы или от мусора в потоке.
+        why = "неизвестно"
         try:
             while True:
                 frame = ws_read_frame(self.rfile)
                 if frame is None:
+                    why = "плата закрыла соединение"
                     break
                 opcode, data = frame
                 kart["seen"] = time.time()
 
                 if opcode == 0x8:
+                    code = struct.unpack(">H", data[:2])[0] if len(data) >= 2 else 0
+                    why = "плата закрыла вебсокет (close%s)" % (" %d" % code if code else "")
                     try:
                         ws_write_frame(self.wfile, 0x8)
                     except OSError:
@@ -2223,7 +2495,17 @@ class Handler(BaseHTTPRequestHandler):
                 if opcode == 0xA or opcode not in (0x1, 0x2):
                     continue
 
-                text = data.decode("utf-8", "replace")
+                if opcode == 0x1:
+                    # Плата шлёт только ASCII. Битые байты в текстовом кадре —
+                    # это обрезанный статус с чужим хвостом: сам кадр ещё
+                    # пишем в лог как улику, а соединение закрываем.
+                    try:
+                        text = data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        wslog("in", kart["id"], data.decode("utf-8", "replace"))
+                        raise WsBroken("в текстовом кадре битые байты — поток сбился")
+                else:
+                    text = data.decode("utf-8", "replace")
                 try:
                     obj = json.loads(text)
                 except ValueError:
@@ -2275,8 +2557,23 @@ class Handler(BaseHTTPRequestHandler):
                         # единственный настоящий тормоз это снятие
                         # разрешения движения, и держать его поднятым на
                         # свободном карте нельзя: сядет кто угодно и поедет.
-                        drive_gate(kart, False)
-                        speed_gate(kart, True)
+                        #
+                        # Но ни одного HTTP в этом потоке. Он единственный,
+                        # кто читает сокет карта, и раньше на время запроса
+                        # (до трёх секунд таймаута плюс очередь к другим
+                        # платам) сервер переставал слушать только что
+                        # вернувшийся карт. По логам 25-28.10: /On7, ушедший
+                        # до первого ответа на Status, — повторный обрыв в
+                        # 27 случаях из 84; после первого ответа — 0 из 35.
+                        #
+                        # Поэтому снятие разрешения — сразу, но в своём
+                        # потоке, и только если последняя известная
+                        # телеметрия говорит kOn=1. Остальное (и разрешение,
+                        # и подсветка) — по первому свежему ответу, см. ниже.
+                        last = kart.get("status") or {}
+                        if str(last.get("kOn", "")).strip() == "1":
+                            drive_gate(kart, False, wait=False)
+                        kart["settle_on_status"] = True
                     # Долг по остановке важнее всего остального: если заезд
                     # кончился, пока плата молчала, снимаем разрешение сразу.
                     # Отложенный СТОП больше не нужен отдельным механизмом:
@@ -2293,8 +2590,20 @@ class Handler(BaseHTTPRequestHandler):
                     want_done(kart)
                     kart["status_at"] = time.time()
                     ride_watch(kart, obj)
-        except (OSError, ValueError):
-            pass
+                    # Первый ответ по этому соединению: плата живая, телеметрия
+                    # свежая — теперь можно и сверить свободный карт по HTTP.
+                    if kart.pop("settle_on_status", False):
+                        threading.Thread(target=idle_settle, args=(kart,),
+                                         daemon=True).start()
+        except WsBroken as e:
+            why = str(e)
+        except OSError as e:
+            why = ws_os_why(e)
+        except ValueError as e:
+            why = "ошибка разбора: %s" % e
+        except Exception as e:
+            why = "ошибка сервера: %r" % e
+            raise
         finally:
             with karts_lock:
                 # Слепок снимаем до того, как карт исчезнет из реестра, —
@@ -2317,7 +2626,10 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 if karts.get(kart["id"]) is kart:
                     karts.pop(kart["id"], None)
-            wslog("sys", kart["id"], "карт отключился")
+            now = time.time()
+            wslog("sys", kart["id"], "карт отключился — %s | на связи %d с, "
+                  "последний кадр %.1f с назад"
+                  % (why, now - kart["connected"], now - kart["seen"]))
 
 
 # ==================================================================== состояние
@@ -2625,10 +2937,15 @@ LOGIN_HTML = """<!DOCTYPE html>
 
 def main():
     start_file_log()
+    # До потоков и сервера: поток заездов первым же тиком записал бы пустой
+    # файл поверх прежнего, а подключившийся карт не нашёл бы свой слепок.
+    rides_load()
     port, host = cint("port", 8080), cstr("host", "0.0.0.0")
     threading.Thread(target=ride_ticker, daemon=True).start()
     threading.Thread(target=want_loop, daemon=True).start()
     threading.Thread(target=status_poller, daemon=True).start()
+    if S["syslog_port"]:
+        threading.Thread(target=syslog_listener, daemon=True).start()
 
     srv = ThreadingHTTPServer((host, port), Handler)
     line = "=" * 60
@@ -2656,6 +2973,9 @@ def main():
     print("  Опрос телеметрии: раз в %d с, карты по очереди" % S["status_period"])
     print("  Карт без связи остаётся в панели %d мин, его таймер идёт дальше."
           % (GHOST_TTL // 60))
+    if S["syslog_port"]:
+        print("  Журнал роутера: UDP %d, принимаю от %s"
+              % (S["syslog_port"], ", ".join(S["syslog_from"]) or "любых адресов"))
     if S["drive_on"]:
         print("  Разрешение движения: /%s при старте, %s"
               % (S["drive_on"],
