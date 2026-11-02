@@ -1365,6 +1365,13 @@ def chunk_len(rest):
     return int(lim)
 
 
+# Продление заезда. stop_ok_at — когда плата последний раз ответила «Stop OK»
+# (по DUUID); renew_busy — до какого времени идёт продление карта: сторож
+# не начинает второе, пока первое ждёт ответа платы.
+stop_ok_at = {}
+renew_busy = {}
+
+
 def ride_renew(kart):
     """Продлить идущий заезд следующим куском, не закрывая его.
 
@@ -1373,7 +1380,8 @@ def ride_renew(kart):
     Stop в начале обязателен — иначе плата досчитает свой старый кусок
     и погаснет посреди следующего.
     """
-    def go():
+    def work():
+        duuid = str(kart.get("duuid") or kart.get("id") or "")
         r = kart.get("ride") or {}
         if r.get("phase") not in ("ride", "crawl"):
             return
@@ -1383,8 +1391,17 @@ def ride_renew(kart):
         piece = chunk_len(rest)
 
         k = live_kart(kart)
+        t_stop = time.time()
         ws_send(k, {"Command": "Stop"})
+        # Разрешение шлём только после ответа платы на Stop. Плата бывает
+        # занята и отрабатывает Stop на секунды позже: 02.11 16:55 у №3
+        # «Stop OK» пришёл через 2,7 с, уже после «/On6 — ок», Stop уронил
+        # реле, и карт с гостем стоял, пока заезд не сняли из CRM. С 28.10
+        # так легли 7 из 252 продлений, реле упало в 2 (29.10 13:04 №14
+        # простоял до конца заезда). Ждём ответ до 3 с; нет ответа — как раньше.
         time.sleep(0.4)
+        while stop_ok_at.get(duuid, 0) < t_stop and time.time() < t_stop + 3.0:
+            time.sleep(0.05)
         k = live_kart(kart)
         # Разрешение шлём ВСЕГДА, не глядя на телеметрию. drive_gate()
         # сверяется с последним Status, а он снят ДО нашего Stop и почти
@@ -1429,8 +1446,51 @@ def ride_renew(kart):
             cur["chunks"] = cur.get("chunks", 1) + 1
         wslog("sys", k["id"], "продление заезда: кусок %d с, всего осталось %d с"
               % (piece, rest))
+        renew_check(kart, duuid, t_stop)
+
+    def go():
+        duuid = str(kart.get("duuid") or kart.get("id") or "")
+        renew_busy[duuid] = time.time() + 30
+        try:
+            work()
+        finally:
+            renew_busy.pop(duuid, None)
 
     threading.Thread(target=go, daemon=True).start()
+
+
+def renew_check(kart, duuid, t_stop):
+    """Сверить по телеметрии, что после продления реле включено.
+
+    Ожидание «Stop OK» в ride_renew закрывает гонку, но если плата не
+    ответила за 3 с, разрешение ушло вслепую, а ответ «ок» на /On6 ничего
+    не гарантирует: поздний Stop роняет реле уже после него. Поэтому
+    смотрим свежие статусы: kOn=0 посреди заезда — досылаем /On6, не больше
+    двух раз. kOn=1 засчитываем, только когда плата уже подтвердила Stop.
+    """
+    t0 = time.time()
+    deadline = t0 + S["status_period"] * 3 + 3
+    tries = 0
+    while time.time() < deadline:
+        time.sleep(0.25)
+        k = live_kart(kart)
+        if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
+            return
+        if k.get("status_at", 0) <= t0:
+            continue
+        t0 = k.get("status_at", 0)
+        kon = str((k.get("status") or {}).get("kOn", "")).strip()
+        if kon == "1" and stop_ok_at.get(duuid, 0) >= t_stop:
+            return
+        if kon == "0":
+            if tries >= 2:
+                wslog("sys", k["id"], "после продления реле так и не включилось — карт стоит, проверьте")
+                return
+            tries += 1
+            wslog("sys", k["id"], "после продления реле выключено (kOn=0) — повторяю разрешение")
+            want_set(k, gate=True)
+            if kart_online(k) and kart_reachable(k):
+                send_gate_now(k, True)
 
 
 def ride_start(kart, minutes, speed_idx, test=False):
@@ -1723,7 +1783,8 @@ def ride_ticker():
                     and r.get("chunk_end")
                     and r["chunk_end"] < r.get("t_end", 0) - 30
                     and now >= r["chunk_end"] - S["chunk_lead"]
-                    and now - r.get("renew_at", 0) > 10):
+                    and now - r.get("renew_at", 0) > 10
+                    and renew_busy.get(str(kart.get("duuid") or kart.get("id") or ""), 0) < now):
                 r["renew_at"] = now
                 ride_renew(kart)
 
@@ -2510,6 +2571,10 @@ class Handler(BaseHTTPRequestHandler):
                     obj = json.loads(text)
                 except ValueError:
                     wslog("in", kart["id"], text)
+                    if text.strip() == "Stop OK":
+                        # Его ждёт продление заезда (ride_renew): разрешение
+                        # движения уходит только после этого ответа.
+                        stop_ok_at[str(kart.get("duuid") or kart["id"])] = time.time()
                     continue
                 if not isinstance(obj, dict):
                     wslog("in", kart["id"], text)
