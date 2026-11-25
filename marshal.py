@@ -1373,6 +1373,7 @@ def chunk_len(rest):
 # не начинает второе, пока первое ждёт ответа платы.
 stop_ok_at = {}
 renew_busy = {}
+STOP_FRESH = 10.0                # столько секунд после нашего Stop телеметрии о реле не верим
 
 
 def ride_renew(kart):
@@ -1406,6 +1407,12 @@ def ride_renew(kart):
         while stop_ok_at.get(duuid, 0) < t_stop and time.time() < t_stop + 3.0:
             time.sleep(0.05)
         k = live_kart(kart)
+        # Пока ждали ответа, заезд могли закрыть: конец времени, маршал или
+        # защита по телеметрии. Тогда разрешение не возвращаем — иначе
+        # неисправный карт снова получил бы реле.
+        if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
+            wslog("sys", k["id"], "продление отменено: заезд уже закрыт")
+            return
         # Разрешение шлём ВСЕГДА, не глядя на телеметрию. drive_gate()
         # сверяется с последним Status, а он снят ДО нашего Stop и почти
         # всегда показывает kOn=1: запрос не уходил, Stop ронял kOn, и
@@ -1421,6 +1428,9 @@ def ride_renew(kart):
         if S["drive_settle"]:
             time.sleep(S["drive_settle"])
         k = live_kart(kart)
+        if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
+            wslog("sys", k["id"], "продление отменено: заезд уже закрыт")
+            return
         ws_send(k, {"Command": "Start", "Length": piece})
         time.sleep(0.3)
 
@@ -1528,10 +1538,29 @@ def ride_start(kart, minutes, speed_idx, test=False):
                crawl_seconds=S["crawl_seconds"])
     kart["ride"]["chunks"] = 1
 
-    drive_gate(kart, True)      # обычно уже поднято — запрос не уйдёт
+    stopped = kart.get("stop_at", 0)
+    if time.time() - stopped < STOP_FRESH:
+        # Только что ушёл наш Stop. Телеметрия о реле ещё старая (kOn=1), хотя
+        # Stop его роняет: drive_gate поверил бы ей и /On6 не послал бы. А
+        # /On6 раньше, чем плата отработает Stop, она уронит обратно (02.11
+        # у №3 «Stop OK» пришёл через 2,7 с). Поэтому, как при продлении,
+        # ждём ответ платы до 3 с и разрешение шлём не глядя.
+        duuid = str(kart.get("duuid") or kart.get("id") or "")
+        while stop_ok_at.get(duuid, 0) < stopped and time.time() < stopped + 3.0:
+            time.sleep(0.05)
+        want_set(kart, gate=True)
+        if kart_online(kart) and kart_reachable(kart):
+            send_gate_now(kart, True)
+    else:
+        drive_gate(kart, True)      # обычно уже поднято — запрос не уйдёт
     # /On7 не шлём: Start поднимает kOn1 сам. Лишний HTTP к плате не нужен.
     if S["drive_settle"]:
         time.sleep(S["drive_settle"])
+    # Пока шли запросы к плате, заезд могла закрыть защита по телеметрии:
+    # первые 255 приходят раньше, чем появится плашка. Тогда Start не шлём.
+    if (live_kart(kart).get("ride") or {}).get("phase") != "ride":
+        wslog("sys", kart["id"], "старт отменён: заезд уже закрыт")
+        return
     ws_send(kart, {"Command": "Start", "Length": piece})
     # Лимит — ПОСЛЕ Start и по HTTP. Вебсокетный MaxSpeed на этой прошивке
     # телеметрию не двигает (проверено 07.09: MaxSpeed OK, а Speed остаётся 0),
@@ -1542,9 +1571,11 @@ def ride_start(kart, minutes, speed_idx, test=False):
     # Отсчёт ведём от момента, когда Start реально ушёл в карт, иначе
     # таймер в панели убежит вперёд на всё время ожидания HTTP.
     now = time.time()
-    kart["ride"].update({"t0": now, "t_paid": now + seconds,
-                         "t_end": now + seconds + S["crawl_seconds"],
-                         "chunk_end": now + piece})
+    r = kart.get("ride") or {}
+    if r.get("phase") == "ride":          # не закрыт ли он, пока ставили лимит
+        r.update({"t0": now, "t_paid": now + seconds,
+                  "t_end": now + seconds + S["crawl_seconds"],
+                  "chunk_end": now + piece})
     rides_save_safe()
     # Докатка у тест-драйва такая же: она нужна, чтобы человек не встал
     # посреди трассы, а это не зависит от того, платный заезд или пробный.
@@ -1727,6 +1758,9 @@ def rides_load():
         print("  Заезды до перезапуска: идущих не было.")
 
 
+finish_lock = threading.Lock()
+
+
 def ride_finish(kart, why="заезд закончен"):
     """Закрыть заезд: погасить карт, снять разрешение, забыть слепок.
 
@@ -1735,7 +1769,25 @@ def ride_finish(kart, why="заезд закончен"):
     обязательно выбрасываем — иначе законченный заезд оживёт при
     следующем подключении.
     """
-    r0 = kart.get("ride") or {}
+    # Сначала закрываем заезд у нынешнего объекта карта, и только потом идём
+    # к плате. HTTP ниже занимает секунды; раньше заезд стирался после него,
+    # и если плата за это время переподключалась (неисправная перезагружается
+    # часто), новый объект забирал ещё открытый заезд и возвращал его плате.
+    # Замок — от двойного закрытия: сторож заездов и защита по телеметрии
+    # могут прийти сюда одновременно, а CRM должна получить одно событие.
+    with finish_lock:
+        kart = live_kart(kart)
+        r0 = dict(kart.get("ride") or {})
+        kart["ride"] = dict(IDLE)
+        kart["ride_ended"] = time.time()
+        kart["drive_since"] = 0
+        kart["stop_at"] = time.time()
+    if r0.get("phase", "idle") != "idle":
+        ride_event(kart, "finish", why=why,
+                   minutes=r0.get("minutes", 0), test=bool(r0.get("test")),
+                   started=r0.get("t0", 0))
+    ghost_drop(kart.get("duuid"))
+    rides_save_safe()             # снятый заезд не должен ожить после перезапуска
     # Останавливает ТОЛЬКО снятие разрешения движения. Лимит нулём этого
     # не делает: 10.09 замерено, что при kOn=1 карт продолжает ехать самым
     # малым газом, даже когда driveOn=0. Поэтому здесь Off6 — и он уходит
@@ -1743,19 +1795,136 @@ def ride_finish(kart, why="заезд закончен"):
     ws_send(kart, {"Command": "Stop"})
     drive_gate(kart, False)
     speed_gate(kart, True)
-    ride_event(kart, "finish", why=why,
-               minutes=r0.get("minutes", 0), test=bool(r0.get("test")),
-               started=r0.get("t0", 0))
-    kart["ride"] = dict(IDLE)
-    kart["ride_ended"] = time.time()
-    kart["drive_since"] = 0
-    ghost_drop(kart.get("duuid"))
-    rides_save_safe()             # снятый заезд не должен ожить после перезапуска
     wslog("sys", kart["id"], why)
 
 
 def ride_stop(kart):
     ride_finish(kart, "остановлен вручную")
+
+
+# ================================================== защита по телеметрии
+#
+# Две беды, которые видны в телеметрии и которые прошивка сама не лечит
+# (разбор прошивки 25.11, «Разбор прошивки\карта-прошивки-2026-11-25.md»).
+#
+#   1. Сбой шины I2C. Плата не проверяет ошибку чтения своего АЦП, и
+#      несчитанное значение приходит как 255. Для педали это «в пол»: плата
+#      сама выдаёт на мотор больше лимита — 170 при 50%, 255 при 100%.
+#      Живая педаль до 255 не доходит (в пол 182-216), adc0 и adc3 повторяют
+#      выход ЦАП и выше 220 не бывают. Значит 255 в любом из трёх полей —
+#      отказ платы, а не газ. №12 22.11 17:20: adcIn=255 и adc0=255 при
+#      лимите 50%, затем перезагрузка.
+#   2. Местный режим. Пока сервера нет, свободный карт сам зажигает
+#      подсветку и по включению I/O едет 600 с без оплаты, потом ещё минуту
+#      на 20%. Вернувшийся сервер плата не слушается: не начатое местное
+#      катание снимает сама, начатое — доезжает. Признак в телеметрии —
+#      localModeWaitStart=1; катание идёт — timeDriveOn=1 или поднято реле.
+#
+# Сторож свободного карта в ride_ticker сам Stop не шлёт: он судит по
+# незнанию сервера (после перезапуска все карты возвращаются едущими).
+# Здесь о беде говорит сама плата, поэтому карт останавливаем.
+
+GUARD_ADC_FAULT = 255
+GUARD_ADC_KEYS = ("adcIn", "adc0", "adc3")
+GUARD_REPEAT = 5.0               # останов не чаще; Status приходит раз в 6 с
+GUARD_LOG_EVERY = 60.0           # запись без останова — не чаще
+GUARD_ALARM_TTL = 600            # столько секунд плашка висит в панели
+guard_alarms = {}                # duuid -> {"kind": ..., "text": ..., "at": ...}
+guard_acted = {}                 # duuid -> когда последний раз останавливали
+guard_logged = {}                # duuid -> когда последний раз писали в лог
+
+
+def guard_check(st, phase):
+    """Что не так с картом по одному ответу Status.
+
+    None — всё в порядке. Иначе (вид, останавливать ли, текст): вид "adc" —
+    сбой шины платы, "local" — местный режим.
+    """
+    relay = kart_num(st, "kOn") == 1
+    bad = [k for k in GUARD_ADC_KEYS if kart_num(st, k) == GUARD_ADC_FAULT]
+    if bad:
+        return ("adc", relay,
+                "сбой платы: %s=255 — педаль не читается, газ может уйти "
+                "выше лимита. К гостям не выпускать, проверить плату"
+                % ", ".join(bad))
+    if kart_num(st, "localModeWaitStart") != 1:
+        return None
+    riding = relay or kart_num(st, "timeDriveOn") == 1
+    if phase == "idle" and riding:
+        return ("local", True, "катается в местном режиме без оплаты — "
+                               "сервера не было на связи")
+    if phase != "idle":
+        return ("local", False, "плата в местном режиме посреди заезда")
+    # Видя сервер (remoteMode=1), плата снимает такой режим сама на ближайшей
+    # секунде. Если не видит — режим висит, но начнётся катание — остановим.
+    return ("local", False, "плата в местном режиме, катание не начато")
+
+
+def guard_status(kart, st):
+    """Проверка каждого ответа Status.
+
+    Зовётся из потока, который читает сокет карта, поэтому HTTP здесь нет:
+    остановка уходит в свой поток.
+    """
+    phase = (kart.get("ride") or {}).get("phase", "idle")
+    found = guard_check(st, phase)
+    if not found:
+        return
+    kind, stop, text = found
+    duuid = str(kart.get("duuid") or kart.get("id") or "")
+    now = time.time()
+    if kind == "adc" or stop:
+        guard_alarms[duuid] = {"kind": kind, "text": text, "at": now}
+    if stop and now - guard_acted.get(duuid, 0) >= GUARD_REPEAT:
+        guard_acted[duuid] = now
+        guard_logged[duuid] = now
+        wslog("sys", kart["id"], "ЗАЩИТА: %s — останавливаю карт" % text)
+        threading.Thread(target=guard_stop, args=(kart, kind, text),
+                         daemon=True).start()
+        return
+    if now - guard_logged.get(duuid, 0) >= GUARD_LOG_EVERY:
+        guard_logged[duuid] = now
+        wslog("sys", kart["id"], "ЗАЩИТА: %s" % text)
+
+
+def guard_start_block(kart):
+    """Почему этому карту нельзя давать заезд. Пусто — можно.
+
+    Пока висит плашка о сбое платы, заезд на карт не продаём: он
+    закончился бы через несколько секунд по той же защите, а гость
+    остался бы без оплаченного времени.
+    """
+    a = guard_alarms.get(str(kart.get("duuid") or "")) or {}
+    if a.get("kind") == "adc" and time.time() - a.get("at", 0) < GUARD_ALARM_TTL:
+        return "карт неисправен — " + a.get("text", "")
+    return ""
+
+
+def guard_stop(kart, kind, why):
+    """Остановить карт по сигналу защиты."""
+    k = live_kart(kart)
+    if (k.get("ride") or {}).get("phase", "idle") in ("ride", "crawl"):
+        if kind != "adc":
+            # Пока сюда шли, маршал начал на этом карте оплаченный заезд.
+            # Stop сорвал бы его старт, а местный режим плата снимет сама.
+            wslog("sys", k["id"], "ЗАЩИТА: на карте начат заезд — "
+                                  "местный режим не трогаю")
+            return
+        # Заезд закрываем целиком, а не одним Stop: иначе продление и
+        # сторож докатки подняли бы разрешение движения обратно.
+        ride_finish(k, "ЗАЩИТА: " + why)
+        return
+    k["stop_at"] = time.time()
+    ws_send(k, {"Command": "Stop"})
+    # Stop на плате идёт секунду, и за это время маршал мог начать на
+    # карте заезд. Тогда разрешение не трогаем: желаемое у карта уже
+    # «включено», и снятие перезаписало бы его — оплаченный карт стоял бы.
+    k = live_kart(kart)
+    if (k.get("ride") or {}).get("phase", "idle") != "idle":
+        wslog("sys", k["id"], "ЗАЩИТА: на карте начат заезд — "
+                              "разрешение не снимаю")
+        return
+    drive_gate(k, False)
 
 
 def ride_ticker():
@@ -2248,6 +2417,9 @@ class Handler(BaseHTTPRequestHandler):
                                                      % allowed}) or True
             if (k.get("ride") or {}).get("phase", "idle") != "idle":
                 return self.send_json(400, {"ok": False, "error": "карт уже в заезде"}) or True
+            block = guard_start_block(k)
+            if block:
+                return self.send_json(400, {"ok": False, "error": block}) or True
             if d.get("speed") is not None:
                 try:
                     val = max(0, min(100, int(d.get("speed"))))
@@ -2342,6 +2514,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, {"ok": False, "error": "недопустимая длительность"})
             if not 0 <= speed < len(S["speeds"]):
                 return self.send_json(200, {"ok": False, "error": "недопустимая скорость"})
+            block = guard_start_block(kart)
+            if block:
+                return self.send_json(200, {"ok": False, "error": block})
             ride_start(kart, minutes, speed, test)
             return self.send_json(200, {"ok": True})
 
@@ -2658,6 +2833,7 @@ class Handler(BaseHTTPRequestHandler):
                     want_done(kart)
                     kart["status_at"] = time.time()
                     ride_watch(kart, obj)
+                    guard_status(kart, obj)
                     # Первый ответ по этому соединению: плата живая, телеметрия
                     # свежая — теперь можно и сверить свободный карт по HTTP.
                     if kart.pop("settle_on_status", False):
@@ -2708,6 +2884,7 @@ def state_item(k, now, with_status, online):
     target = r.get("t_end", 0) if phase == "crawl" else r.get("t_paid", 0)
     sp = r.get("speed", 0)
     st = k.get("status") or {}
+    alarm = guard_alarms.get(str(k.get("duuid") or "")) or {}
     item = {
         "id": k.get("id") or k.get("duuid", ""),
         "duuid": k.get("duuid", ""),
@@ -2721,6 +2898,8 @@ def state_item(k, now, with_status, online):
         "t0": r.get("t0", 0), "t_paid": r.get("t_paid", 0), "t_end": r.get("t_end", 0),
         "test": bool(r.get("test")),
         "driveOn": st.get("driveOn"), "stuck": bool(k.get("stuck")),
+        "alarm": (alarm.get("text", "")
+                  if now - alarm.get("at", 0) < GUARD_ALARM_TTL else ""),
         "online": bool(online) and (now - k.get("seen", 0)) < 20,
         "gone": round(now - k["gone"], 1) if k.get("gone") else 0,
         "maxspeed": kart_speed(k.get("duuid")),
