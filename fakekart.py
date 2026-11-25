@@ -119,7 +119,7 @@ class FakeKart(threading.Thread):
     daemon = True
 
     def __init__(self, host, port, duuid, number, pedal, local=False, adc_fault=False,
-                 wait=600, io_edge=False):
+                 wait=600, io_edge=False, io_edge_after=0, pedal_cycle=False):
         threading.Thread.__init__(self, name="kart-%s" % number)
         self.host, self.port = host, port
         self.duuid = duuid
@@ -136,6 +136,14 @@ class FakeKart(threading.Thread):
         # Гость щёлкнул I/O: катание пошло по Length (timeDriveOn=1), и Start
         # его уже не продлевает — только Stop и новый Start.
         self.io_edge = io_edge
+        # Как №13 25.11: I/O включили через N с после старта, один раз. Плата
+        # видит фронт и считает заезд сама; после Stop и Start снова ждёт —
+        # I/O уже включено, нового фронта нет.
+        self.io_edge_after = io_edge_after
+        self.io_click_at = 0.0
+        self.io_clicked = False
+        # Гость то жмёт педаль, то отпускает: 7 с нажата, 5 с отпущена.
+        self.pedal_cycle = pedal_cycle
         self.time_drive_on = 0
         self.sock = None
         self.max_speed = 60
@@ -148,8 +156,12 @@ class FakeKart(threading.Thread):
     # ---- то, что видит панель
     def telemetry(self):
         relay = 1 if (self.drive_on or self.local_ride) else 0
-        moving = relay and self.pedal
-        adc_in = random.randint(96, 118) if moving else random.randint(60, 72)
+        pedal = self.pedal or (self.pedal_cycle and time.time() % 12 < 7)
+        moving = relay and pedal
+        # adcIn — датчик педали за платой, как на живых картах 25.11:
+        # отпущена 40-49, до упора 180-189, без реле (датчик без питания) ~2.
+        adc_in = (random.randint(180, 189) if moving
+                  else random.randint(41, 47) if relay else random.randint(0, 3))
         adc3 = random.randint(128, 152) if moving else random.randint(52, 62)
         adc0 = random.randint(63, 66)
         if self.adc_fault and relay:
@@ -208,6 +220,8 @@ class FakeKart(threading.Thread):
                 self.drive_until = time.time() + (self.length + 60 if self.io_edge
                                                   else self.wait)
                 self.time_drive_on = 1 if self.io_edge else 0
+                if self.io_edge_after and not self.io_clicked and not self.io_click_at:
+                    self.io_click_at = time.time() + self.io_edge_after
             self.drive_on = 1
             self.say("Start OK")
             print("  карт %-2d  Start на %d с, лимит %d%s"
@@ -243,6 +257,14 @@ class FakeKart(threading.Thread):
 
     # ---- свой таймер: настоящая плата гасит себя сама
     def expire(self):
+        if (self.io_click_at and time.time() >= self.io_click_at and self.drive_on
+                and not self.time_drive_on):
+            # Фронт I/O в ожидании: катание пошло по Length, потом минута парковки.
+            self.io_click_at, self.io_clicked = 0.0, True
+            self.time_drive_on = 1
+            self.drive_until = time.time() + self.length + 60
+            print("  карт %-2d  гость щёлкнул I/O — плата считает заезд сама (%d с)"
+                  % (self.number, self.length))
         if self.drive_on and self.drive_until and time.time() >= self.drive_until:
             print("  карт %-2d  %s, погас сам" % (
                 self.number, "катание по Length кончилось" if self.time_drive_on
@@ -299,6 +321,10 @@ def main():
                     help="таймаут ожидания платы после Start, с (у прошивки 600)")
     ap.add_argument("--io-edge", action="store_true",
                     help="на карте 1 гость щёлкает I/O: Start его заезд не продлевает")
+    ap.add_argument("--io-edge-after", type=int, default=0, metavar="N",
+                    help="на карте 1 гость включает I/O через N с после старта, один раз")
+    ap.add_argument("--pedal-cycle", action="store_true",
+                    help="педаль то нажата (7 с), то отпущена (5 с)")
     args = ap.parse_args()
 
     print("=" * 58)
@@ -316,7 +342,9 @@ def main():
         first = i == 0
         FakeKart(args.host, args.port, args.first + i, i + 1, args.pedal,
                  local=first and args.local, adc_fault=first and args.adc_fault,
-                 wait=args.wait, io_edge=first and args.io_edge).start()
+                 wait=args.wait, io_edge=first and args.io_edge,
+                 io_edge_after=args.io_edge_after if first else 0,
+                 pedal_cycle=args.pedal_cycle).start()
         time.sleep(0.3)
 
     try:
