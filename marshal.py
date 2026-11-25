@@ -314,6 +314,13 @@ crawl_mode = restart
 # запросы к ESP8266 обрывают связь. Меньше 2 нельзя, по умолчанию 6.
 status_period = 6
 
+# Гость щёлкнул I/O посреди заезда — плата начинает считать заезд сама, и
+# продлить её без Stop уже нельзя. Сервер перевзводит её сразу (Stop и Start),
+# но только с отпущенной педалью: контроллер, включённый с нажатой педалью,
+# стоит, пока её не отпустят. Педаль отпущена, пока adcIn не выше этого
+# числа; 0 — не перевзводить.
+rearm_pedal_max = 55
+
 # --- журнал роутера -----------------------------------------
 # Keenetic умеет слать свой журнал по syslog. Впишите порт (обычно 514) и
 # включите на роутере удалённый syslog на адрес кассы: строки роутера
@@ -440,6 +447,10 @@ S = {
     # связь. Телеметрия нужна только чтобы видеть карт на экране, ехать она
     # не помогает — так что реже здесь лучше.
     "status_period": max(2, min(60, cint("status_period", 6))),
+    # Перевзвод после щелчка I/O посреди заезда (ride_rearm): педаль считается
+    # отпущенной, пока adcIn не выше этого. Замер 25.11: отпущена 40-49,
+    # нажата до упора 180-189. 0 — перевзвод выключен.
+    "rearm_pedal_max": max(0, min(254, cint("rearm_pedal_max", 55))),
     "crawl_mode": ("live" if cstr("crawl_mode", "restart").strip().lower()
                    == "live" else "restart"),
     # Журнал роутера по syslog: Keenetic шлёт строки на этот UDP-порт, сервер
@@ -1376,6 +1387,7 @@ def ride_resume(kart):
         ws_send(k, {"Command": "Start", "Length": piece})
         if r2.get("phase") == phase:
             r2["chunk_end"] = time.time() + piece
+            r2["start_at"] = time.time()
         time.sleep(0.3)
         k = live_kart(kart)
         if phase == "crawl":
@@ -1504,6 +1516,7 @@ def renew_soft(kart, phase, piece):
                 set_speed_http(k, speed)  # Start лимит не принял — ставим как раньше
         r = k.get("ride") or {}
         r["chunk_end"] = t0 + piece
+        r["start_at"] = t0
         r["chunks"] = r.get("chunks", 1) + 1
         wslog("sys", k["id"], "продление без Stop: кусок %d с, лимит %d" % (piece, speed))
         return True
@@ -1534,85 +1547,196 @@ def ride_renew(kart):
         k = live_kart(kart)
         if renew_soft(k, r.get("phase"), piece):
             return
-        renew_busy[duuid] = time.time() + 30    # старый путь — свои ~5-10 с
-        k = live_kart(kart)
-        if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
-            return
-        rest = int((k.get("ride") or {}).get("t_end", 0) - time.time())
-        if rest < 5:
-            return
-        piece = chunk_len(rest)
-        t_stop = time.time()
-        ws_send(k, {"Command": "Stop"})
-        # Разрешение шлём только после ответа платы на Stop. Плата бывает
-        # занята и отрабатывает Stop на секунды позже: 02.11 16:55 у №3
-        # «Stop OK» пришёл через 2,7 с, уже после «/On6 — ок», Stop уронил
-        # реле, и карт с гостем стоял, пока заезд не сняли из CRM. С 28.10
-        # так легли 7 из 252 продлений, реле упало в 2 (29.10 13:04 №14
-        # простоял до конца заезда). Ждём ответ до 3 с; нет ответа — как раньше.
-        time.sleep(0.4)
-        while stop_ok_at.get(duuid, 0) < t_stop and time.time() < t_stop + 3.0:
-            time.sleep(0.05)
-        k = live_kart(kart)
-        # Пока ждали ответа, заезд могли закрыть: конец времени, маршал или
-        # защита по телеметрии. Тогда разрешение не возвращаем — иначе
-        # неисправный карт снова получил бы реле.
-        if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
-            wslog("sys", k["id"], "продление отменено: заезд уже закрыт")
-            return
-        # Разрешение шлём ВСЕГДА, не глядя на телеметрию. drive_gate()
-        # сверяется с последним Status, а он снят ДО нашего Stop и почти
-        # всегда показывает kOn=1: запрос не уходил, Stop ронял kOn, и
-        # Start без /On6 оставлял карт стоять до конца заезда. Докатка
-        # разрешение не возвращает — карт докатывали руками.
-        want_set(k, gate=True)
-        if kart_online(k) and kart_reachable(k):
-            send_gate_now(k, True)
-        # Выход 7 здесь НЕ трогаем. Измерено 07.09: прошивка сама поднимает
-        # kOn1 по команде Start и роняет по Stop — оба выхода привязаны к
-        # состоянию заезда внутри платы. Наш /On7 отсюда прилетал уже посреди
-        # докатки (поток продления стартовал раньше неё) и зажигал свет обратно.
-        if S["drive_settle"]:
-            time.sleep(S["drive_settle"])
-        k = live_kart(kart)
-        if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
-            wslog("sys", k["id"], "продление отменено: заезд уже закрыт")
-            return
-        ws_send(k, {"Command": "Start", "Length": piece})
-        time.sleep(0.3)
-
-        # Куски покрывают и докатку, значит продление может попасть внутрь
-        # неё. Тогда возвращать обычный лимит карта нельзя — скорость
-        # прыгнула бы обратно вверх посреди докатки. И выход 7 надо гасить
-        # заново: Start его поднимает.
-        # Лимит и выход 7 тоже шлём всегда: Start их сбросил, а телеметрия
-        # в памяти по-прежнему старая и сказала бы, что всё уже стоит.
-        k = live_kart(kart)
-        crawl = (k.get("ride") or {}).get("phase") == "crawl"
-        speed = kart_crawl(k.get("duuid")) if crawl else ride_speed(k)
-        if crawl:
-            want_set(k, light=False)
-        if S["speed_http"]:
-            want_set(k, speed=speed)
-        if kart_online(k) and kart_reachable(k):
-            if crawl:
-                send_light_now(k, False)
-            if S["speed_http"]:
-                send_speed_now(live_kart(kart), speed)
-
-        cur = kart.get("ride") or {}
-        if cur.get("phase") in ("ride", "crawl"):
-            cur["chunk_end"] = time.time() + piece
-            cur["chunks"] = cur.get("chunks", 1) + 1
-        wslog("sys", k["id"], "продление заезда: кусок %d с, всего осталось %d с"
-              % (piece, rest))
-        renew_check(kart, duuid, t_stop)
+        renew_hard(kart, duuid)
 
     def go():
         duuid = str(kart.get("duuid") or kart.get("id") or "")
         renew_busy[duuid] = time.time() + soft_wait() + 30
         try:
             work()
+        finally:
+            renew_busy.pop(duuid, None)
+
+    threading.Thread(target=go, daemon=True).start()
+
+
+def renew_hard(kart, duuid, what="продление заезда"):
+    """Старый путь продления: Stop, разрешение, Start, лимит.
+
+    Реле на это время падает (~2 с), свет гаснет, контроллер перезагружается.
+    Нужен, когда плата уже считает заезд сама (гость щёлкнул I/O) или не
+    подтвердила продление без Stop. what — как назвать это в логе.
+    """
+    renew_busy[duuid] = time.time() + 30    # старый путь — свои ~5-10 с
+    k = live_kart(kart)
+    if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
+        return
+    rest = int((k.get("ride") or {}).get("t_end", 0) - time.time())
+    if rest < 5:
+        return
+    piece = chunk_len(rest)
+    t_stop = time.time()
+    ws_send(k, {"Command": "Stop"})
+    # Разрешение шлём только после ответа платы на Stop. Плата бывает
+    # занята и отрабатывает Stop на секунды позже: 02.11 16:55 у №3
+    # «Stop OK» пришёл через 2,7 с, уже после «/On6 — ок», Stop уронил
+    # реле, и карт с гостем стоял, пока заезд не сняли из CRM. С 28.10
+    # так легли 7 из 252 продлений, реле упало в 2 (29.10 13:04 №14
+    # простоял до конца заезда). Ждём ответ до 3 с; нет ответа — как раньше.
+    time.sleep(0.4)
+    while stop_ok_at.get(duuid, 0) < t_stop and time.time() < t_stop + 3.0:
+        time.sleep(0.05)
+    k = live_kart(kart)
+    # Пока ждали ответа, заезд могли закрыть: конец времени, маршал или
+    # защита по телеметрии. Тогда разрешение не возвращаем — иначе
+    # неисправный карт снова получил бы реле.
+    if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
+        wslog("sys", k["id"], "продление отменено: заезд уже закрыт")
+        return
+    # Разрешение шлём ВСЕГДА, не глядя на телеметрию. drive_gate()
+    # сверяется с последним Status, а он снят ДО нашего Stop и почти
+    # всегда показывает kOn=1: запрос не уходил, Stop ронял kOn, и
+    # Start без /On6 оставлял карт стоять до конца заезда. Докатка
+    # разрешение не возвращает — карт докатывали руками.
+    want_set(k, gate=True)
+    if kart_online(k) and kart_reachable(k):
+        send_gate_now(k, True)
+    # Выход 7 здесь НЕ трогаем. Измерено 07.09: прошивка сама поднимает
+    # kOn1 по команде Start и роняет по Stop — оба выхода привязаны к
+    # состоянию заезда внутри платы. Наш /On7 отсюда прилетал уже посреди
+    # докатки (поток продления стартовал раньше неё) и зажигал свет обратно.
+    if S["drive_settle"]:
+        time.sleep(S["drive_settle"])
+    k = live_kart(kart)
+    if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
+        wslog("sys", k["id"], "продление отменено: заезд уже закрыт")
+        return
+    t_start = time.time()
+    ws_send(k, {"Command": "Start", "Length": piece})
+    time.sleep(0.3)
+
+    # Куски покрывают и докатку, значит продление может попасть внутрь
+    # неё. Тогда возвращать обычный лимит карта нельзя — скорость
+    # прыгнула бы обратно вверх посреди докатки. И выход 7 надо гасить
+    # заново: Start его поднимает.
+    # Лимит и выход 7 тоже шлём всегда: Start их сбросил, а телеметрия
+    # в памяти по-прежнему старая и сказала бы, что всё уже стоит.
+    k = live_kart(kart)
+    crawl = (k.get("ride") or {}).get("phase") == "crawl"
+    speed = kart_crawl(k.get("duuid")) if crawl else ride_speed(k)
+    if crawl:
+        want_set(k, light=False)
+    if S["speed_http"]:
+        want_set(k, speed=speed)
+    if kart_online(k) and kart_reachable(k):
+        if crawl:
+            send_light_now(k, False)
+        if S["speed_http"]:
+            send_speed_now(live_kart(kart), speed)
+
+    cur = kart.get("ride") or {}
+    if cur.get("phase") in ("ride", "crawl"):
+        cur["chunk_end"] = time.time() + piece
+        cur["start_at"] = t_start
+        cur["chunks"] = cur.get("chunks", 1) + 1
+    wslog("sys", k["id"], "%s: кусок %d с, всего осталось %d с"
+          % (what, piece, rest))
+    renew_check(kart, duuid, t_stop)
+
+
+REARM_MAX = 2                    # перевзводов за заезд, дальше — только плановые продления
+
+
+def pedal_released(st):
+    """Педаль отпущена — по adcIn, датчику педали за платой.
+
+    Замер 25.11 по шести картам: отпущена 40-49, до упора 180-189; при
+    выключенном реле ~2 (датчик питается от контроллера); 255 — сбой шины.
+    """
+    adc = kart_num(st, "adcIn")
+    return adc is not None and adc <= S["rearm_pedal_max"]
+
+
+def rearm_tick(kart, r, now):
+    """Сторож щелчка I/O посреди заезда. Зовётся из ride_ticker раз в секунду.
+
+    25.11 у №13 I/O включили через 35 с после старта: плата увидела фронт и
+    стала считать заезд сама (timeDriveOn=1). Продление без Stop такая плата
+    не берёт, и через 9 минут ушло продление через Stop: реле упало, свет
+    погас, контроллер включился с нажатой педалью и стоял, пока гость её не
+    отпустил. После того Stop плата снова ждала (dIn уже 1, нового фронта
+    нет), и все следующие продления прошли без Stop.
+
+    Поэтому тот же Stop делаем сразу после щелчка и только с отпущенной
+    педалью: свет моргнёт один раз, контроллер встанет без блокировки, дальше
+    продления без Stop.
+    """
+    if S["rearm_pedal_max"] <= 0 or S["chunk_seconds"] <= 0:
+        return
+    duuid = str(kart.get("duuid") or kart.get("id") or "")
+    st = kart.get("status") or {}
+    at = kart.get("status_at", 0)
+    if not (kart_num(st, "timeDriveOn") == 1 and kart_num(st, "kOn") == 1
+            and at > r.get("start_at", 0) + 1            # статус снят после нашего Start
+            and now - at < S["status_period"] * 2 + 2):
+        return
+    # Продление в этом заезде ещё будет, и до планового далеко. Нет — Stop
+    # не нужен вовсе или плановое продление сделает его само.
+    if not (r.get("chunk_end") and r["chunk_end"] < r.get("t_end", 0) - 30
+            and r["chunk_end"] - now > S["chunk_lead"] + 5):
+        return
+    if renew_busy.get(duuid, 0) >= now or now - r.get("rearm_at", 0) < 8:
+        return
+    if r.get("rearms", 0) >= REARM_MAX:
+        # Плата снова считает заезд сама сразу после перевзвода: значит фронт
+        # I/O у неё бывает и без гостя. Ронять реле каждые несколько секунд
+        # нельзя — дальше как раньше, через Stop на плановом продлении.
+        if not r.get("rearm_gave_up"):
+            r["rearm_gave_up"] = True
+            wslog("sys", kart["id"], "щелчок I/O снова после %d перевзводов — больше "
+                                     "не перевзвожу, продления через Stop" % REARM_MAX)
+        return
+    if not pedal_released(st):
+        if r.get("rearm_wait_logged", 0) < r.get("start_at", 0) + 1:
+            r["rearm_wait_logged"] = now
+            wslog("sys", kart["id"], "щелчок I/O посреди заезда, педаль нажата "
+                                     "(adcIn=%s) — перевзведу, как только отпустят"
+                  % st.get("adcIn"))
+        return
+    r["rearm_at"] = now
+    ride_rearm(kart)
+
+
+def ride_rearm(kart):
+    """Перевзвести плату после щелчка I/O: свежий Status, педаль отпущена — Stop/Start."""
+    def go():
+        duuid = str(kart.get("duuid") or kart.get("id") or "")
+        renew_busy[duuid] = time.time() + 30
+        try:
+            # Решаем по статусу, снятому сейчас, а не 6 с назад: за это время
+            # гость мог нажать педаль.
+            asked = time.time()
+            ws_send(live_kart(kart), {"Command": "Status"})
+            st = None
+            while time.time() < asked + 3.0:
+                time.sleep(0.1)
+                k = live_kart(kart)
+                if k.get("status_at", 0) > asked:
+                    st = k.get("status") or {}
+                    break
+            k = live_kart(kart)
+            if st is None or (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
+                return
+            if kart_num(st, "timeDriveOn") != 1 or kart_num(st, "kOn") != 1:
+                return
+            if not pedal_released(st):
+                return                        # нажал, пока спрашивали: сторож попробует снова
+            ride = k.get("ride") or {}
+            ride["rearms"] = ride.get("rearms", 0) + 1
+            wslog("sys", k["id"], "щелчок I/O посреди заезда, педаль отпущена "
+                                  "(adcIn=%s) — перевзвожу плату, дальше продления "
+                                  "без Stop" % st.get("adcIn"))
+            renew_hard(kart, duuid, "перевзвод после щелчка I/O")
         finally:
             renew_busy.pop(duuid, None)
 
@@ -1730,7 +1854,7 @@ def ride_start(kart, minutes, speed_idx, test=False, limit=None):
         # съел бы запас до таймаута платы.
         r.update({"t0": now, "t_paid": now + seconds,
                   "t_end": now + seconds + S["crawl_seconds"],
-                  "chunk_end": t_sent + piece})
+                  "chunk_end": t_sent + piece, "start_at": t_sent})
     rides_save_safe()
     # Докатка у тест-драйва такая же: она нужна, чтобы человек не встал
     # посреди трассы, а это не зависит от того, платный заезд или пробный.
@@ -2113,6 +2237,8 @@ def ride_ticker():
                     and renew_busy.get(str(kart.get("duuid") or kart.get("id") or ""), 0) < now):
                 r["renew_at"] = now
                 ride_renew(kart)
+            elif phase in ("ride", "crawl"):
+                rearm_tick(kart, r, now)
 
             if phase == "ride" and now >= r.get("t_paid", 0):
                 if S["crawl_seconds"] > 0:
