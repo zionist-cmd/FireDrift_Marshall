@@ -118,7 +118,8 @@ def ws_recv(sock):
 class FakeKart(threading.Thread):
     daemon = True
 
-    def __init__(self, host, port, duuid, number, pedal, local=False, adc_fault=False):
+    def __init__(self, host, port, duuid, number, pedal, local=False, adc_fault=False,
+                 wait=600, io_edge=False):
         threading.Thread.__init__(self, name="kart-%s" % number)
         self.host, self.port = host, port
         self.duuid = duuid
@@ -129,6 +130,13 @@ class FakeKart(threading.Thread):
         self.local_ride = local
         # Сбой шины I2C: все каналы АЦП читаются как 255, пока реле включено.
         self.adc_fault = adc_fault
+        # Прошивка 0.9.10 после Start ждёт фронта I/O и через 600 с ожидания
+        # снимает заезд сама. Каждый Start в ожидании таймер перезапускает.
+        self.wait = wait
+        # Гость щёлкнул I/O: катание пошло по Length (timeDriveOn=1), и Start
+        # его уже не продлевает — только Stop и новый Start.
+        self.io_edge = io_edge
+        self.time_drive_on = 0
         self.sock = None
         self.max_speed = 60
         self.drive_on = 0
@@ -161,7 +169,7 @@ class FakeKart(threading.Thread):
             "remoteMode": 1,
             "blockLokalDrive": 0,
             "lengthDrive": 600 if self.local_ride else self.length,
-            "timeDriveOn": 1 if self.local_ride else 0,
+            "timeDriveOn": 1 if (self.local_ride or self.time_drive_on) else 0,
             "localModeWaitStart": 1 if self.local_ride else 0,
             "adcIn": str(adc_in),
             "adc0": str(adc0),
@@ -190,18 +198,28 @@ class FakeKart(threading.Thread):
         name = cmd.get("Command")
 
         if name == "Start":
-            self.length = int(cmd.get("Length") or 0)
+            if "Speed" in cmd:
+                self.max_speed = min(100, int(cmd.get("Speed") or 0))
+            renewed = not self.time_drive_on
+            if renewed:
+                self.length = int(cmd.get("Length") or 0)
+                # По I/O плата едет Length, потом минуту паркуется на 20% и
+                # только тогда роняет реле; без I/O — таймаут ожидания.
+                self.drive_until = time.time() + (self.length + 60 if self.io_edge
+                                                  else self.wait)
+                self.time_drive_on = 1 if self.io_edge else 0
             self.drive_on = 1
-            self.drive_until = time.time() + self.length
             self.say("Start OK")
-            print("  карт %-2d  Start на %d с, лимит %d"
-                  % (self.number, self.length, self.max_speed))
+            print("  карт %-2d  Start на %d с, лимит %d%s"
+                  % (self.number, self.length, self.max_speed,
+                     "" if renewed else " — идёт катание по I/O, Start его не продлил"))
 
         elif name == "Stop":
             was_local = self.local_ride
             self.drive_on = 0
             self.length = 0
             self.drive_until = 0
+            self.time_drive_on = 0
             self.local_ride = False
             self.say("Stop OK")
             print("  карт %-2d  Stop%s" % (self.number,
@@ -226,10 +244,13 @@ class FakeKart(threading.Thread):
     # ---- свой таймер: настоящая плата гасит себя сама
     def expire(self):
         if self.drive_on and self.drive_until and time.time() >= self.drive_until:
+            print("  карт %-2d  %s, погас сам" % (
+                self.number, "катание по Length кончилось" if self.time_drive_on
+                else "время ожидания вышло (%d с от Start)" % self.wait))
             self.drive_on = 0
             self.length = 0
             self.drive_until = 0
-            print("  карт %-2d  время вышло, погас сам" % self.number)
+            self.time_drive_on = 0
 
     def run(self):
         while True:
@@ -274,6 +295,10 @@ def main():
                     help="карт 1 подключается посреди местного катания без оплаты")
     ap.add_argument("--adc-fault", action="store_true",
                     help="у карта 1 сбой шины I2C: при включённом реле АЦП читается как 255")
+    ap.add_argument("--wait", type=int, default=600,
+                    help="таймаут ожидания платы после Start, с (у прошивки 600)")
+    ap.add_argument("--io-edge", action="store_true",
+                    help="на карте 1 гость щёлкает I/O: Start его заезд не продлевает")
     args = ap.parse_args()
 
     print("=" * 58)
@@ -290,7 +315,8 @@ def main():
     for i in range(args.karts):
         first = i == 0
         FakeKart(args.host, args.port, args.first + i, i + 1, args.pedal,
-                 local=first and args.local, adc_fault=first and args.adc_fault).start()
+                 local=first and args.local, adc_fault=first and args.adc_fault,
+                 wait=args.wait, io_edge=first and args.io_edge).start()
         time.sleep(0.3)
 
     try:

@@ -481,6 +481,7 @@ def read_names():
            if k.startswith("kart.")}
     speed = {}
     crawl = {}
+    preset = {}
     try:
         with open(NAMES_PATH, encoding="utf-8") as fh:
             for line in fh:
@@ -491,7 +492,13 @@ def read_names():
                 key, val = key.strip(), val.strip()
                 if not key:
                     continue
-                if key.endswith(".speed"):
+                if ".preset." in key:
+                    duuid, name = key.split(".preset.", 1)
+                    try:
+                        preset.setdefault(duuid, {})[name] = max(0, min(100, int(val)))
+                    except ValueError:
+                        pass
+                elif key.endswith(".speed"):
                     try:
                         speed[key[:-6]] = max(0, min(100, int(val)))
                     except ValueError:
@@ -505,28 +512,34 @@ def read_names():
                     out[key] = val         # файл имён главнее старого конфига
     except OSError:
         pass
-    return out, speed, crawl
+    return out, speed, crawl, preset
 
 
-def write_names(names, speed=None, crawl=None):
+def write_names(names, speed=None, crawl=None, preset=None):
     if speed is None:
         speed = KART_SPEED
     if crawl is None:
         crawl = KART_CRAWL
+    if preset is None:
+        preset = KART_PRESET
     with names_lock:
         out = ["# Карты парка. Этот файл при обновлении сервера не заменяется.",
                "#   <DUUID>       = номер на кузове",
                "#   <DUUID>.speed = лимит скорости 0..100",
                "#   <DUUID>.crawl = лимит докатки 0..100 (нет строки — общий из marshal.conf)",
+               "#   <DUUID>.preset.<градация> = лимит этого карта в градации 0..100",
+               "#                               (нет строки — общее значение градации)",
                "# Правится из панели и админки.",
                ""]
-        for duuid in sorted(set(list(names) + list(speed) + list(crawl))):
+        for duuid in sorted(set(list(names) + list(speed) + list(crawl) + list(preset))):
             if str(names.get(duuid, "")).strip():
                 out.append("%s = %s" % (duuid, names[duuid]))
             if duuid in speed:
                 out.append("%s.speed = %d" % (duuid, speed[duuid]))
             if duuid in crawl:
                 out.append("%s.crawl = %d" % (duuid, crawl[duuid]))
+            for name in sorted(preset.get(duuid) or {}):
+                out.append("%s.preset.%s = %d" % (duuid, name, preset[duuid][name]))
         out.append("")
         tmp = NAMES_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -534,12 +547,42 @@ def write_names(names, speed=None, crawl=None):
         os.replace(tmp, NAMES_PATH)
 
 
-KART_NAMES, KART_SPEED, KART_CRAWL = read_names()
+KART_NAMES, KART_SPEED, KART_CRAWL, KART_PRESET = read_names()
 
 
 def kart_speed(duuid):
     """Лимит скорости конкретного карта. Нет своего — берём общий."""
     return KART_SPEED.get(str(duuid), S["speed_default"])
+
+
+def preset_speed(duuid, idx):
+    """Лимит карта в градации скорости, выбранной маршалом.
+
+    Своё значение карта из таблицы в админке, а нет его — общее значение
+    градации. Контроллеры откалиброваны по-разному, и один и тот же
+    процент на разных картах даёт разную скорость.
+    """
+    speeds = S["speeds"]
+    if not 0 <= idx < len(speeds):
+        return kart_speed(duuid)
+    sp = speeds[idx]
+    return (KART_PRESET.get(str(duuid)) or {}).get(sp["name"], sp["val"])
+
+
+def ride_speed(kart):
+    """Лимит идущего заезда: выбран при старте, правится ползунком на ходу."""
+    lim = (kart.get("ride") or {}).get("limit")
+    return lim if lim is not None else kart_speed(kart.get("duuid"))
+
+
+def set_ride_limit(duuid, val):
+    """Новый лимит идущему заезду — и у карта на связи, и у его слепка:
+    вернувшийся после обрыва карт получит уже новый (ride_resume)."""
+    with karts_lock:
+        for obj in (karts.get(duuid), ghosts.get(duuid)):
+            r = (obj or {}).get("ride") or {}
+            if r.get("phase") in ("ride", "crawl"):
+                r["limit"] = val
 
 
 def kart_crawl(duuid):
@@ -1315,7 +1358,7 @@ def ride_resume(kart):
         # перезагрузился и потерял разрешение, лимит и свой таймер.
         # Вот теперь заезд действительно надо вернуть.
         speed = (kart_crawl(k.get("duuid")) if phase == "crawl"
-                 else kart_speed(k.get("duuid")))
+                 else ride_speed(k))
         drive_gate(k, True)
         if S["drive_settle"]:
             time.sleep(S["drive_settle"])
@@ -1376,13 +1419,107 @@ renew_busy = {}
 STOP_FRESH = 10.0                # столько секунд после нашего Stop телеметрии о реле не верим
 
 
+SOFT_RENEW_WAIT = 20.0           # столько ждём, что плата приняла продление без Stop
+BOARD_WAIT = 600                 # таймаут ожидания платы после Start (прошивка 0.9.10)
+FALLBACK_RESERVE = 30            # столько оставляем старому пути до этого таймаута
+SOFT_MIN_WAIT = 5.0              # меньше — подтверждения не дождаться, сразу через Stop
+
+
+def soft_wait():
+    """Сколько можно ждать подтверждения, чтобы старый путь успел до таймаута.
+
+    Продление начинается за chunk_lead до конца куска, а плата снимет реле
+    через BOARD_WAIT от прошлого Start. При заводских 540/8 это 68 с; кусок
+    длиннее — и ждать можно меньше, вплоть до нуля (тогда сразу через Stop).
+    """
+    left = BOARD_WAIT - S["chunk_seconds"] + S["chunk_lead"]
+    return max(0.0, min(SOFT_RENEW_WAIT, left - FALLBACK_RESERVE))
+
+
+def renew_soft(kart, phase, piece):
+    """Продлить кусок одним Start, не роняя реле. True — получилось.
+
+    Разбор прошивки 25.11: плата, не видевшая фронта I/O (timeDriveOn=0),
+    всё ещё ждёт начала заезда, и её 600-секундный таймер ожидания — это и
+    есть «предел платы». Каждый Start в этом состоянии перезапускает таймер
+    и берёт из команды Length и Speed. Реле не падает: контроллер не
+    перезагружается (карты с педалью в обход реле после такой перезагрузки
+    стоят, пока гость не отпустит педаль), свет не моргает, нет паузы ~2 с.
+
+    Если гость щёлкнул I/O (timeDriveOn=1), Start плату уже не продлевает, и
+    тогда только старым путём, через Stop. Подтверждение — свежая телеметрия
+    с нашим Length; не пришло за SOFT_RENEW_WAIT — тоже старым путём: до
+    600 с у платы от начала куска ещё около минуты.
+    """
+    duuid = str(kart.get("duuid") or kart.get("id") or "")
+    st = kart.get("status") or {}
+    fresh = time.time() - kart.get("status_at", 0) < S["status_period"] * 2 + 2
+    wait = soft_wait()
+    if not (wait >= SOFT_MIN_WAIT and fresh and kart_num(st, "timeDriveOn") == 0
+            and kart_num(st, "kOn") == 1):
+        return False                      # мало времени — подтверждения не дождаться
+    # Length другой, чем был: только так по телеметрии видно, что плата
+    # приняла именно этот Start. Секунда разницы на заезд не влияет: конец
+    # заезда считает сервер.
+    if kart_num(st, "lengthDrive") == piece:
+        piece -= 1
+    crawl = phase == "crawl"
+    speed = kart_crawl(duuid) if crawl else ride_speed(kart)
+    k = live_kart(kart)
+    if (k.get("ride") or {}).get("phase") != phase:
+        return True                       # заезд закрыли или сменилась фаза — не трогаем
+    t0 = time.time()
+    if not ws_send(k, {"Command": "Start", "Length": piece, "Speed": speed_raw(speed)}):
+        return False                      # сокет мёртв: ждать подтверждения нечего
+    time.sleep(0.3)
+    if crawl:
+        # Start поднимает выход 7, а на докатке он должен быть погашен. Пауза —
+        # чтобы /Off7 не обогнал Start на плате; после подтверждения сверим kOn1.
+        want_set(k, light=False)
+        if kart_online(k) and kart_reachable(k):
+            send_light_now(k, False)
+    # Свежий статус сразу, не ждать очередного опроса: плата пишет lengthDrive
+    # в строку статуса раз в секунду.
+    time.sleep(1.0)
+    ws_send(live_kart(kart), {"Command": "Status"})
+    while time.time() < t0 + wait:
+        time.sleep(0.25)
+        k = live_kart(kart)
+        now_phase = (k.get("ride") or {}).get("phase")
+        if now_phase not in ("ride", "crawl"):
+            return True                   # заезд закрыли, пока ждали: продлевать нечего
+        if k.get("status_at", 0) <= t0:
+            continue
+        st = k.get("status") or {}
+        if kart_num(st, "lengthDrive") != piece or kart_num(st, "kOn") != 1:
+            continue
+        if now_phase != phase:
+            # Пока ждали, началась докатка, а Start ушёл с лимитом заезда:
+            # её лимит и свет — заново.
+            crawl_kick(k)
+        else:
+            if crawl:
+                speed_gate(k, False)      # выход 7 погашен? Нет — погасить
+            if kart_num(st, "Speed") != speed_raw(speed):
+                set_speed_http(k, speed)  # Start лимит не принял — ставим как раньше
+        r = k.get("ride") or {}
+        r["chunk_end"] = t0 + piece
+        r["chunks"] = r.get("chunks", 1) + 1
+        wslog("sys", k["id"], "продление без Stop: кусок %d с, лимит %d" % (piece, speed))
+        return True
+    wslog("sys", kart["id"], "продление без Stop не подтвердилось за %d с — "
+                             "продлеваю через Stop" % wait)
+    return False
+
+
 def ride_renew(kart):
     """Продлить идущий заезд следующим куском, не закрывая его.
 
-    Порядок тот же, что при старте, и по той же причине: разрешение
-    движения побочно сбрасывает лимит скорости, поэтому идёт первым.
-    Stop в начале обязателен — иначе плата досчитает свой старый кусок
-    и погаснет посреди следующего.
+    Сначала — одним Start, не роняя реле (renew_soft). Не вышло — старым
+    путём: Stop, разрешение, Start, лимит. Порядок тот же, что при старте,
+    и по той же причине: разрешение движения побочно сбрасывает лимит
+    скорости, поэтому идёт первым. Stop здесь обязателен — иначе плата
+    досчитает свой старый кусок и погаснет посреди следующего.
     """
     def work():
         duuid = str(kart.get("duuid") or kart.get("id") or "")
@@ -1395,6 +1532,16 @@ def ride_renew(kart):
         piece = chunk_len(rest)
 
         k = live_kart(kart)
+        if renew_soft(k, r.get("phase"), piece):
+            return
+        renew_busy[duuid] = time.time() + 30    # старый путь — свои ~5-10 с
+        k = live_kart(kart)
+        if (k.get("ride") or {}).get("phase") not in ("ride", "crawl"):
+            return
+        rest = int((k.get("ride") or {}).get("t_end", 0) - time.time())
+        if rest < 5:
+            return
+        piece = chunk_len(rest)
         t_stop = time.time()
         ws_send(k, {"Command": "Stop"})
         # Разрешение шлём только после ответа платы на Stop. Плата бывает
@@ -1442,7 +1589,7 @@ def ride_renew(kart):
         # в памяти по-прежнему старая и сказала бы, что всё уже стоит.
         k = live_kart(kart)
         crawl = (k.get("ride") or {}).get("phase") == "crawl"
-        speed = kart_crawl(k.get("duuid")) if crawl else kart_speed(k.get("duuid"))
+        speed = kart_crawl(k.get("duuid")) if crawl else ride_speed(k)
         if crawl:
             want_set(k, light=False)
         if S["speed_http"]:
@@ -1463,7 +1610,7 @@ def ride_renew(kart):
 
     def go():
         duuid = str(kart.get("duuid") or kart.get("id") or "")
-        renew_busy[duuid] = time.time() + 30
+        renew_busy[duuid] = time.time() + soft_wait() + 30
         try:
             work()
         finally:
@@ -1506,8 +1653,14 @@ def renew_check(kart, duuid, t_stop):
                 send_gate_now(k, True)
 
 
-def ride_start(kart, minutes, speed_idx, test=False):
-    sp = S["speeds"][speed_idx]
+def ride_start(kart, minutes, speed_idx, test=False, limit=None):
+    """Начать заезд. limit — лимит карта в процентах; не задан — по градации
+    speed_idx из таблицы «карт × градация» (preset_speed). Он держится весь
+    заезд: продления и возврат после обрыва ставят его же (ride_speed)."""
+    sp = (S["speeds"][speed_idx] if 0 <= speed_idx < len(S["speeds"])
+          else {"name": "лимит"})
+    if limit is None:
+        limit = preset_speed(kart.get("duuid"), speed_idx)
     seconds = minutes * 60
 
     # Порядок здесь выстрадан и важен:
@@ -1522,6 +1675,7 @@ def ride_start(kart, minutes, speed_idx, test=False):
     # свободным, и сторож успевал заглушить только что начатый заезд.
     now = time.time()
     kart["ride"] = {"phase": "ride", "minutes": minutes, "speed": speed_idx,
+                    "limit": limit,
                     "t0": now, "t_paid": now + seconds,
                     "t_end": now + seconds + S["crawl_seconds"],
                     "test": bool(test)}
@@ -1533,8 +1687,7 @@ def ride_start(kart, minutes, speed_idx, test=False):
     # не нужен собственный перезапуск: карт уже едет, ему просто гасят
     # выход 7 и роняют лимит.
     piece = chunk_len(seconds + S["crawl_seconds"])
-    ride_event(kart, "start", minutes=minutes, test=bool(test),
-               speed=kart_speed(kart.get("duuid")),
+    ride_event(kart, "start", minutes=minutes, test=bool(test), speed=limit,
                crawl_seconds=S["crawl_seconds"])
     kart["ride"]["chunks"] = 1
 
@@ -1561,27 +1714,28 @@ def ride_start(kart, minutes, speed_idx, test=False):
     if (live_kart(kart).get("ride") or {}).get("phase") != "ride":
         wslog("sys", kart["id"], "старт отменён: заезд уже закрыт")
         return
-    ws_send(kart, {"Command": "Start", "Length": piece})
-    # Лимит — ПОСЛЕ Start и по HTTP. Вебсокетный MaxSpeed на этой прошивке
-    # телеметрию не двигает (проверено 07.09: MaxSpeed OK, а Speed остаётся 0),
-    # HTTP-значение держится. И Start сбрасывает состояние, поэтому он первым.
+    # Speed в самом Start: плата берёт лимит прямо из команды (разбор прошивки
+    # 25.11, проверено на №15). HTTP-лимит следом — как раньше, для верности.
+    t_sent = time.time()                  # отсюда плата считает свои 600 с
+    ws_send(kart, {"Command": "Start", "Length": piece, "Speed": speed_raw(limit)})
     time.sleep(0.3)
-    set_speed_http(kart, kart_speed(kart.get("duuid")))
+    set_speed_http(kart, limit)
 
     # Отсчёт ведём от момента, когда Start реально ушёл в карт, иначе
     # таймер в панели убежит вперёд на всё время ожидания HTTP.
     now = time.time()
     r = kart.get("ride") or {}
     if r.get("phase") == "ride":          # не закрыт ли он, пока ставили лимит
+        # Конец куска — от ухода Start: медленный HTTP-лимит выше иначе
+        # съел бы запас до таймаута платы.
         r.update({"t0": now, "t_paid": now + seconds,
                   "t_end": now + seconds + S["crawl_seconds"],
-                  "chunk_end": now + piece})
+                  "chunk_end": t_sent + piece})
     rides_save_safe()
     # Докатка у тест-драйва такая же: она нужна, чтобы человек не встал
     # посреди трассы, а это не зависит от того, платный заезд или пробный.
     wslog("sys", kart["id"], "%s %d мин, скорость «%s» (%d)%s"
-          % ("ТЕСТ-ДРАЙВ" if test else "заезд", minutes,
-             "лимит", kart_speed(kart.get("duuid")),
+          % ("ТЕСТ-ДРАЙВ" if test else "заезд", minutes, sp["name"], limit,
              "" if piece >= seconds
              else ", кусками по %d с (предел платы)" % piece))
 
@@ -2430,7 +2584,8 @@ class Handler(BaseHTTPRequestHandler):
                     write_names(KART_NAMES, KART_SPEED)
                 except OSError:
                     pass
-            ride_start(k, minutes, 0, test)
+            # CRM шлёт число скорости, а не градацию: лимит — лимит карта, как раньше.
+            ride_start(k, minutes, 0, test, limit=kart_speed(k.get("duuid")))
             wslog("sys", k["id"], "СRM: старт заезда %d мин" % minutes)
             return self.send_json(200, {"ok": True, "duuid": k.get("duuid"),
                                         "minutes": minutes}) or True
@@ -2459,6 +2614,7 @@ class Handler(BaseHTTPRequestHandler):
                 write_names(KART_NAMES, KART_SPEED)
             except OSError:
                 pass
+            set_ride_limit(duuid, val)        # продления держат новый лимит
             if k and (k.get("ride") or {}).get("phase") in ("ride", "crawl"):
                 threading.Thread(target=lambda: set_speed_http(live_kart(k), val),
                                  daemon=True).start()
@@ -2568,6 +2724,51 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "crawl": kart_crawl(duuid),
                                         "own": duuid in KART_CRAWL})
 
+        if path == "/api/admin/presets":
+            # Лимиты карта по градациям: {"kart": DUUID, "values": {"Новичок": 45,
+            # "Профи": null}}. null или "" — вернуть градацию к общему значению.
+            if not self.need("admin"):
+                return
+            d = self.body_json()
+            duuid = str(d.get("kart") or "").strip()
+            values = d.get("values")
+            if not duuid.isdigit() or not isinstance(values, dict):
+                return self.send_json(400, {"ok": False, "error": "нужны kart и values"})
+            names = {s["name"] for s in S["speeds"]}
+            own = dict(KART_PRESET.get(duuid) or {})
+            for name, raw in values.items():
+                if name not in names:
+                    return self.send_json(400, {"ok": False,
+                                                "error": "нет градации «%s»" % name})
+                if raw is None or str(raw).strip() == "":
+                    own.pop(name, None)
+                    continue
+                try:
+                    own[name] = max(0, min(100, int(raw)))
+                except (TypeError, ValueError):
+                    return self.send_json(400, {"ok": False, "error": "нужно число 0..100"})
+            # Сначала файл, потом память: не записалось — в памяти остаётся то,
+            # что и на диске.
+            table = dict(KART_PRESET)
+            if own:
+                table[duuid] = own
+            else:
+                table.pop(duuid, None)
+            try:
+                write_names(KART_NAMES, KART_SPEED, KART_CRAWL, table)
+            except OSError as e:
+                wslog("sys", duuid, "не смог сохранить градации: %s" % e)
+                return self.send_json(500, {"ok": False, "error": "не записался karts.conf"})
+            # Меняем одну строку, а не всю таблицу: старт заезда в эту же
+            # секунду не должен увидеть её пустой.
+            if own:
+                KART_PRESET[duuid] = own
+            else:
+                KART_PRESET.pop(duuid, None)
+            wslog("sys", duuid, "лимиты по градациям: %s" % (
+                ", ".join("%s %d" % kv for kv in sorted(own.items())) or "общие"))
+            return self.send_json(200, {"ok": True, "presets": own})
+
         if path == "/api/speed":
             # Ползунок скорости в панели. Значение 0..100 сохраняется
             # в karts.conf на этот карт и применяется сразу, если он едет.
@@ -2586,6 +2787,7 @@ class Handler(BaseHTTPRequestHandler):
                 write_names(KART_NAMES, KART_SPEED)
             except OSError as e:
                 wslog("sys", duuid, "не смог сохранить скорость: %s" % e)
+            set_ride_limit(duuid, val)        # продления держат новый лимит
             kart = karts.get(duuid)
             if kart and (kart.get("ride") or {}).get("phase") == "ride":
                 threading.Thread(
@@ -2902,7 +3104,8 @@ def state_item(k, now, with_status, online):
                   if now - alarm.get("at", 0) < GUARD_ALARM_TTL else ""),
         "online": bool(online) and (now - k.get("seen", 0)) < 20,
         "gone": round(now - k["gone"], 1) if k.get("gone") else 0,
-        "maxspeed": kart_speed(k.get("duuid")),
+        "maxspeed": ride_speed(k) if phase == "ride" else kart_speed(k.get("duuid")),
+        "presets": dict(KART_PRESET.get(str(k.get("duuid") or "")) or {}),
         "crawl": kart_crawl(k.get("duuid")),
         "crawl_own": str(k.get("duuid")) in KART_CRAWL,
     }
@@ -2947,7 +3150,7 @@ def api_state(with_status):
 
     items.sort(key=lambda d: (len(d["name"]), d["name"]))
     return {"ok": True, "karts": items, "now": now,
-            "speed_crawl": S["speed_crawl"]}
+            "speed_crawl": S["speed_crawl"], "speeds": S["speeds"]}
 
 
 # ================================================================== настройки
@@ -2970,6 +3173,10 @@ def save_settings(d):
     presets = [p for p in presets if 1 <= p <= 180][:6]
     test_presets = [p for p in test_presets if 1 <= p <= 180][:4]
     speeds = [s for s in speeds if s["name"] and 0 <= s["val"] <= 100][:4]
+    if any("#" in s["name"] or "=" in s["name"] for s in speeds):
+        # Название градации пишется ключом в karts.conf (<DUUID>.preset.<название>),
+        # а там # — комментарий, = — разделитель.
+        return {"ok": False, "error": "в названии градации нельзя # и ="}
     if not presets:
         return {"ok": False, "error": "нужен хотя бы один пресет времени"}
     if not speeds:
