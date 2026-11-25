@@ -198,6 +198,15 @@
     </div>
 
     <div style="margin-bottom:14px">
+      <div class="sub" style="margin-bottom:7px">
+        Скорость по картам — какой лимит, %, получает карт в каждой градации. Маршал
+        выбирает градацию, карт едет со своим лимитом: контроллеры откалиброваны
+        по-разному. Пусто — общее значение градации. Сохраняется сразу по ОК.
+      </div>
+      <div id="presetKarts"><span class="sub">карты появятся, когда подключатся</span></div>
+    </div>
+
+    <div style="margin-bottom:14px">
       <div class="sub" style="margin-bottom:7px">Имена картов — номер на кузове напротив DUUID</div>
       <div id="sKarts"></div>
       <button id="sAddKart" style="margin-top:8px">+ карт</button>
@@ -394,9 +403,9 @@
       var row = document.createElement("div");
       row.className = "row";
       row.style.marginBottom = "6px";
-      var lab = document.createElement("span");
+      var lab = document.createElement("b");
       lab.style.width = "150px"; lab.style.display = "inline-block";
-      lab.innerHTML = "<b>Карт " + k.name + "</b>";
+      lab.textContent = "Карт " + k.name;   // имя — от платы и настроек: только текстом
       var inp = document.createElement("input");
       inp.type = "number"; inp.min = 0; inp.max = 100; inp.style.width = "90px";
       inp.placeholder = "общий " + global;
@@ -426,6 +435,65 @@
     });
   }
 
+  // Таблица «карт × градация». Как и докатка, перестраивается только когда
+  // меняются карты, градации или сохранённые значения.
+  var presetSig = "";
+  function renderPresets(karts, speeds) {
+    var sig = JSON.stringify(speeds) + karts.map(function (k) {
+      return k.duuid + ":" + k.name + ":" + JSON.stringify(k.presets || {}); }).join("|");
+    if (sig === presetSig) return;
+    presetSig = sig;
+    var box = $("presetKarts");
+    box.innerHTML = "";
+    karts.filter(function (k) { return k.duuid; }).forEach(function (k) {
+      var row = document.createElement("div");
+      row.className = "row";
+      row.style.marginBottom = "6px";
+      var lab = document.createElement("b");
+      lab.style.width = "150px"; lab.style.display = "inline-block";
+      lab.textContent = "Карт " + k.name;   // имя — от платы и настроек: только текстом
+      row.appendChild(lab);
+      var inputs = {};
+      speeds.forEach(function (s) {
+        var cap = document.createElement("label");
+        cap.className = "sub";
+        cap.textContent = s.name;
+        var inp = document.createElement("input");
+        inp.type = "number"; inp.min = 0; inp.max = 100; inp.style.width = "70px";
+        inp.placeholder = String(s.val);
+        var own = (k.presets || {})[s.name];
+        inp.value = own === undefined ? "" : own;
+        inputs[s.name] = inp;
+        row.appendChild(cap); row.appendChild(inp);
+      });
+      var ok = document.createElement("button");
+      ok.textContent = "ОК";
+      var note = document.createElement("span");
+      note.className = "sub";
+      note.textContent = Object.keys(k.presets || {}).length ? "свои" : "общие";
+      ok.addEventListener("click", function () {
+        var values = {};
+        Object.keys(inputs).forEach(function (n) {
+          var v = inputs[n].value.trim();
+          values[n] = v === "" ? null : parseInt(v, 10);
+        });
+        ok.disabled = true;
+        fetch("/api/admin/presets", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kart: k.duuid, values: values }) })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            note.textContent = j.ok ? "сохранено" : ("ошибка: " + (j.error || ""));
+            presetSig = "";           // перерисовать с новыми значениями
+          })
+          .catch(function () { note.textContent = "нет связи с сервером"; })
+          .then(function () { ok.disabled = false; });
+      });
+      row.appendChild(ok); row.appendChild(note);
+      box.appendChild(row);
+    });
+  }
+
   function fillSelect(sel, karts, keepAll) {
     var cur = sel.value;
     sel.innerHTML = keepAll ? '<option value="*">всех картов</option>' : "";
@@ -448,7 +516,9 @@
       if (!box) {
         box = document.createElement("div");
         box.className = "f"; box.id = id;
-        box.innerHTML = '<div class="k">' + k + '</div><div class="v">—</div>';
+        // Имена полей задаёт плата: только текстом.
+        box.innerHTML = '<div class="k"></div><div class="v">—</div>';
+        box.querySelector(".k").textContent = k;
         grid.appendChild(box);
       }
       var val = String(o[k]);
@@ -469,6 +539,7 @@
     }).then(function (j) {
       var karts = j.karts || [];
       try { renderCrawl(karts, (j.speed_crawl !== undefined ? j.speed_crawl : "")); } catch (e) {}
+      try { renderPresets(karts, j.speeds || []); } catch (e) {}
       var tbody = $("kartTable").querySelector("tbody");
       tbody.innerHTML = "";
       $("noKarts").style.display = karts.length ? "none" : "block";
@@ -483,15 +554,26 @@
           var brief = ["driveOn=" + st.driveOn, "kOn=" + st.kOn, "adcIn=" + st.adcIn,
                        "aIn=" + st.aIn, "Speed=" + st.Speed]
             .filter(function (x) { return x.indexOf("undefined") < 0; }).join("  ");
+          // Всё, что приходит от платы (DUUID, телеметрия) и из настроек,
+          // кладём только текстом: любое устройство в сети может
+          // представиться картом и прислать в DUUID разметку.
           var tr = document.createElement("tr");
-          tr.innerHTML =
-            "<td><b>Карт " + k.name + "</b></td>" +
-            '<td class="mono">' + (k.duuid || "—") + "</td>" +
-            '<td><span class="pill ' + p[0] + '">' + p[1] + "</span></td>" +
-            "<td>" + (k.left ? mmss(k.left) : "—") + "</td>" +
-            '<td class="mono">' + k.addr + "</td>" +
-            "<td>" + k.idle + " c</td>" +
-            '<td class="mono">' + (brief || "—") + "</td>";
+          var cell = function (text, cls, tag) {
+            var td = document.createElement("td");
+            if (cls) td.className = cls;
+            var el = tag ? document.createElement(tag) : td;
+            el.textContent = text;
+            if (tag) td.appendChild(el);
+            tr.appendChild(td);
+            return el;
+          };
+          cell("Карт " + k.name, "", "b");
+          cell(k.duuid || "—", "mono");
+          cell(p[1], "", "span").className = "pill " + p[0];
+          cell(k.left ? mmss(k.left) : "—");
+          cell(k.addr, "mono");
+          cell(k.idle + " c");
+          cell(brief || "—", "mono");
           tbody.appendChild(tr);
         } catch (e) {
           console.error("строка таблицы упала для карта", k && (k.id || k.duuid), e);
@@ -714,9 +796,11 @@
         tb.innerHTML = ""; $("findTable").hidden = false;
         (j.found || []).forEach(function (d) {
           var tr = document.createElement("tr");
-          tr.innerHTML = "<td><code>" + d.ip + "</code></td>" +
-            "<td>" + (d.kart ? "● да" + (d.name ? " — " + d.name : "") : "○ просто HTTP") + "</td>" +
-            '<td class="mono">' + (d.via || "") + "</td>" +
+          // Ответы с адресов в сети — чужой текст: экранируем.
+          var esc = function (s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); };
+          tr.innerHTML = "<td><code>" + esc(d.ip) + "</code></td>" +
+            "<td>" + (d.kart ? "● да" + (d.name ? " — " + esc(d.name) : "") : "○ просто HTTP") + "</td>" +
+            '<td class="mono">' + esc(d.via || "") + "</td>" +
             '<td class="mono">' + String(d.detail || "").replace(/</g, "&lt;").slice(0, 140) + "</td>" +
             '<td><button data-use="' + d.ip + '">Выбрать</button></td>';
           tb.appendChild(tr);

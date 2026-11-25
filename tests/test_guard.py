@@ -338,5 +338,135 @@ class GuardAlarmInPanelTest(unittest.TestCase):
         self.assertEqual(self.item(time.time())["alarm"], "")
 
 
+class SoftRenewTest(unittest.TestCase):
+    """Продление куска одним Start, без Stop (renew_soft)."""
+
+    def setUp(self):
+        RaceTest.setUp(self)              # те же заглушки, без тестов RaceTest
+        self.light, self.speed_http = [], []
+        self.board_takes = {"Length": True, "Speed": True}
+        for name, fake in (
+                ("SOFT_RENEW_WAIT", 0.3),
+                ("SOFT_MIN_WAIT", 0.1),
+                ("kart_speed", lambda d: 50),
+                ("kart_crawl", lambda d: 20),
+                ("send_light_now", lambda k, on: self.light.append(on)),
+                ("set_speed_http", lambda k, v: self.speed_http.append(v))):
+            p = mock.patch.object(M, name, fake)
+            p.start()
+            self.addCleanup(p.stop)
+        self.kart = None
+
+    def board(self, kart, obj):
+        """Как плата: Start в ожидании берёт Length и Speed, Stop роняет реле."""
+        st = dict(kart["status"])
+        if obj.get("Command") == "Start" and M.kart_num(st, "timeDriveOn") == 0:
+            if self.board_takes["Length"]:
+                st["lengthDrive"] = obj["Length"]
+            if self.board_takes["Speed"] and "Speed" in obj:
+                st["Speed"] = obj["Speed"]
+        if obj.get("Command") == "Stop":
+            M.stop_ok_at["90000001"] = time.time() + 1
+        kart["status"], kart["status_at"] = st, time.time() + 0.01
+
+    def riding(self, phase="ride", **status):
+        k = RaceTest.riding(self)
+        k["ride"]["phase"] = phase
+        k["ride"]["t_end"] = time.time() + 1000
+        k["status"] = dict({"kOn": "1", "timeDriveOn": "0", "lengthDrive": "540",
+                            "Speed": "50"}, **status)
+        k["status_at"] = time.time()
+        self.kart = k
+        return k
+
+    def fake_ws_send(self, kart, obj):
+        self.sent.append(obj)
+        if self.kart is not None:
+            self.board(self.kart, obj)
+        return True
+
+    def renew(self, k):
+        with mock.patch.object(M, "live_kart", lambda _k: k):
+            M.ride_renew(k)
+
+    def commands(self):
+        """Команды плате без опросов Status."""
+        return [c.get("Command") for c in self.sent if c.get("Command") != "Status"]
+
+    def starts(self):
+        return [c for c in self.sent if c.get("Command") == "Start"]
+
+    def test_soft_renew_sends_one_start_with_speed_and_no_stop(self):
+        k = self.riding()
+        self.renew(k)
+        self.assertEqual(self.commands(), ["Start"])
+        self.assertEqual(self.starts(), [{"Command": "Start", "Length": 539, "Speed": 50}])
+        self.assertIn({"Command": "Status"}, self.sent)      # свежий статус сразу
+        self.assertEqual((self.gate_now, self.gates, self.speed_http), ([], [], []))
+        self.assertAlmostEqual(k["ride"]["chunk_end"], time.time() + 539, delta=2)
+
+    def test_crawl_starting_during_the_wait_is_kicked_again(self):
+        k = self.riding()
+        kicked = []
+
+        def ws_send(kart, obj):
+            self.sent.append(obj)
+            self.board(k, obj)
+            if obj.get("Command") == "Status":
+                k["ride"]["phase"] = "crawl"          # сторож начал докатку
+            return True
+        with mock.patch.object(M, "crawl_kick", lambda kart, again=False: kicked.append(1)), \
+                mock.patch.object(M, "ws_send", ws_send):
+            self.renew(k)
+        self.assertEqual(kicked, [1])
+        self.assertEqual(self.speed_http, [])                # лимит заезда не вернули
+
+    def test_dead_socket_goes_straight_to_stop(self):
+        k = self.riding()
+        with mock.patch.object(M, "ws_send",
+                               lambda kart, obj: self.sent.append(obj) and False):
+            self.renew(k)
+        self.assertEqual(self.commands(), ["Start", "Stop", "Start"])
+
+    def test_no_soft_renew_when_chunk_leaves_no_time_for_fallback(self):
+        with mock.patch.dict(M.S, {"chunk_seconds": 590}):
+            self.renew(self.riding())
+        self.assertEqual(self.commands()[0], "Stop")
+
+    def test_board_ignoring_start_falls_back_to_stop(self):
+        k = self.riding()
+        self.board_takes["Length"] = False
+        self.renew(k)
+        self.assertEqual(self.commands(), ["Start", "Stop", "Start"])
+        self.assertEqual(self.gate_now, [True])
+
+    def test_guest_switched_io_uses_stop_right_away(self):
+        self.renew(self.riding(timeDriveOn="1"))
+        self.assertEqual(self.commands(), ["Stop", "Start"])
+
+    def test_stale_telemetry_uses_stop(self):
+        k = self.riding()
+        k["status_at"] = time.time() - 60
+        self.renew(k)
+        self.assertEqual(self.commands()[0], "Stop")
+
+    def test_relay_off_uses_stop(self):
+        self.renew(self.riding(kOn="0"))
+        self.assertEqual(self.commands()[0], "Stop")
+
+    def test_soft_renew_on_crawl_keeps_light_off_and_crawl_speed(self):
+        k = self.riding(phase="crawl", Speed="20")
+        self.renew(k)
+        self.assertEqual(self.starts(), [{"Command": "Start", "Length": 539, "Speed": 20}])
+        self.assertEqual(self.light, [False])
+
+    def test_speed_set_by_http_if_start_did_not_take_it(self):
+        k = self.riding(Speed="100")
+        self.board_takes["Speed"] = False
+        self.renew(k)
+        self.assertEqual(self.commands(), ["Start"])
+        self.assertEqual(self.speed_http, [50])
+
+
 if __name__ == "__main__":
     unittest.main()
