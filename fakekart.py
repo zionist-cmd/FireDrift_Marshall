@@ -118,12 +118,17 @@ def ws_recv(sock):
 class FakeKart(threading.Thread):
     daemon = True
 
-    def __init__(self, host, port, duuid, number, pedal):
+    def __init__(self, host, port, duuid, number, pedal, local=False, adc_fault=False):
         threading.Thread.__init__(self, name="kart-%s" % number)
         self.host, self.port = host, port
         self.duuid = duuid
         self.number = number
         self.pedal = pedal
+        # Как настоящая плата, которую застали в местном режиме: сервера не
+        # было, гость включил I/O и катается сам. Снимает только Stop.
+        self.local_ride = local
+        # Сбой шины I2C: все каналы АЦП читаются как 255, пока реле включено.
+        self.adc_fault = adc_fault
         self.sock = None
         self.max_speed = 60
         self.drive_on = 0
@@ -134,10 +139,14 @@ class FakeKart(threading.Thread):
 
     # ---- то, что видит панель
     def telemetry(self):
-        moving = self.drive_on and self.pedal
+        relay = 1 if (self.drive_on or self.local_ride) else 0
+        moving = relay and self.pedal
         adc_in = random.randint(96, 118) if moving else random.randint(60, 72)
         adc3 = random.randint(128, 152) if moving else random.randint(52, 62)
-        a_in = random.randint(22, 27) if self.drive_on else random.randint(9, 13)
+        adc0 = random.randint(63, 66)
+        if self.adc_fault and relay:
+            adc_in = adc0 = adc3 = 255
+        a_in = random.randint(22, 27) if relay else random.randint(9, 13)
         return {
             "SSDP": "Kart_%d_" % self.number,
             "DUUID": str(self.duuid),
@@ -146,15 +155,16 @@ class FakeKart(threading.Thread):
             "Firmvare_version": "0.9.10",
             "ip": "10.20.0.%d" % (100 + self.number),
             "driveOn": self.drive_on,
-            "kOn": str(self.drive_on),
-            "kOn1": str(self.drive_on),
+            "kOn": str(relay),
+            "kOn1": str(relay),
             "Speed": self.max_speed,
             "remoteMode": 1,
             "blockLokalDrive": 0,
-            "lengthDrive": self.length,
-            "timeDriveOn": 0,
+            "lengthDrive": 600 if self.local_ride else self.length,
+            "timeDriveOn": 1 if self.local_ride else 0,
+            "localModeWaitStart": 1 if self.local_ride else 0,
             "adcIn": str(adc_in),
-            "adc0": str(random.randint(63, 66)),
+            "adc0": str(adc0),
             "adc3": str(adc3),
             "aIn": "%d_%.2f" % (a_in, a_in * 0.0404),
             "dIn": "1",
@@ -188,11 +198,14 @@ class FakeKart(threading.Thread):
                   % (self.number, self.length, self.max_speed))
 
         elif name == "Stop":
+            was_local = self.local_ride
             self.drive_on = 0
             self.length = 0
             self.drive_until = 0
+            self.local_ride = False
             self.say("Stop OK")
-            print("  карт %-2d  Stop" % self.number)
+            print("  карт %-2d  Stop%s" % (self.number,
+                                         " — местное катание снято" if was_local else ""))
 
         elif name == "MaxSpeed":
             self.max_speed = int(cmd.get("MaxSpeed") or 0)
@@ -257,6 +270,10 @@ def main():
     ap.add_argument("--first", type=int, default=90000001, help="первый DUUID")
     ap.add_argument("--pedal", action="store_true",
                     help="имитировать нажатую педаль: adcIn и adc3 растут на ходу")
+    ap.add_argument("--local", action="store_true",
+                    help="карт 1 подключается посреди местного катания без оплаты")
+    ap.add_argument("--adc-fault", action="store_true",
+                    help="у карта 1 сбой шины I2C: при включённом реле АЦП читается как 255")
     args = ap.parse_args()
 
     print("=" * 58)
@@ -271,7 +288,9 @@ def main():
     print("=" * 58)
 
     for i in range(args.karts):
-        FakeKart(args.host, args.port, args.first + i, i + 1, args.pedal).start()
+        first = i == 0
+        FakeKart(args.host, args.port, args.first + i, i + 1, args.pedal,
+                 local=first and args.local, adc_fault=first and args.adc_fault).start()
         time.sleep(0.3)
 
     try:

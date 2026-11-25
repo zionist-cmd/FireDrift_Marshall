@@ -312,7 +312,7 @@
     var s = STATE[phase] || STATE.idle;
     if (k.test && phase === "ride") s = STATE.test;
     var el = document.createElement("div");
-    el.className = "kart " + s.cls + (k.stuck ? " stuck" : "");
+    el.className = "kart " + s.cls + (k.stuck || k.alarm ? " stuck" : "");
 
     // Карт, который едет вне заезда, не может называться свободным.
     if (k.stuck && phase !== "offline") s = STATE.stuck;
@@ -331,6 +331,15 @@
       al.className = "alarm";
       al.textContent = "Карт едет вне заезда. Сервер шлёт «Стоп». Подойди к карту.";
       el.appendChild(al);
+    }
+
+    // Защита сервера остановила карт или нашла сбой платы. Текст — от
+    // сервера, плашка держится десять минут.
+    if (k.alarm) {
+      var ga = document.createElement("div");
+      ga.className = "alarm";
+      ga.textContent = "Защита: " + k.alarm;
+      el.appendChild(ga);
     }
 
     if (phase === "offline") {
@@ -442,7 +451,7 @@
 
   // Всё, от чего зависит вид карточки, кроме бегущих цифр на табло.
   function sigOf(k) {
-    return [k.name, k.phase, k.online, k.stuck, k.test, k.minutes,
+    return [k.name, k.phase, k.online, k.stuck, k.alarm, k.test, k.minutes,
             k.speed_name, k.t0, k.t_paid, k.t_end,
             speedOf(k.id), CFGSTAMP].join("|");
   }
