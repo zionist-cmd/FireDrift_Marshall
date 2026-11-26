@@ -1,0 +1,326 @@
+address	text
+3ffe8330	`z%@`z%@`z%@`z%@dz%@dz%@dz%@
+3ffe85ee	ASCII
+3ffe860e	ASCII
+3ffe8700	2.2.2-dev(38a443e)
+3ffe8746	NJF@<8
+3ffe87d0	l\tq\tv\t{\t
+3ffe88cb	?CALLBACK:  HTTP update process finished
+3ffe88f4	CALLBACK:  HTTP update process started
+3ffe891b	CALLBACK:  HTTP update fatal error code %d\n
+3ffe8947	CALLBACK:  HTTP update process at %d of %d bytes...\n
+3ffe897c	web Socket disconnected
+3ffe8994	web Socket Connected
+3ffe89a9	ones= 
+3ffe89b0	 zeros= 
+3ffe89b9	no data 
+3ffe89c2	ru.pool.ntp.org
+3ffe89d2	\nWaiting for time
+3ffe89e4	ITime Ready!
+3ffe89f1	arduino
+3ffe89f9	WS connect to 
+3ffe8a08	Failed to open config file
+3ffe8a23	Write sucsses
+3ffe8a31	localdrives.json
+3ffe8a42	reboots.json
+3ffe8a4f	config.json
+3ffe8a5b	Failed
+3ffe8a62	Large
+3ffe8a68	raceslist.txt
+3ffe8a76	{"Command":"RacesList","Data":"
+3ffe8a99	/edit
+3ffe8a9f	download
+3ffe8aa8	application/octet-stream
+3ffe8ac1	text/html
+3ffe8acb	.html
+3ffe8ad1	application/json
+3ffe8ae2	.css
+3ffe8ae7	text/css
+3ffe8af4	application/javascript
+3ffe8b0b	.png
+3ffe8b10	image/png
+3ffe8b1a	.gif
+3ffe8b1f	image/gif
+3ffe8b29	.jpg
+3ffe8b2e	image/jpeg
+3ffe8b39	.ico
+3ffe8b3e	image/x-icon
+3ffe8b4b	text/xml
+3ffe8b54	.pdf
+3ffe8b59	application/x-pdf
+3ffe8b6b	.zip
+3ffe8b70	application/x-zip
+3ffe8b86	application/x-gzip
+3ffe8b99	text/plain
+3ffe8ba4	%s:%s
+3ffe8baa	/list
+3ffe8bb3	\r\n--%s
+3ffe8bba	%zx\r\n
+3ffe8bc5	Reset OK
+3ffe8bce	text / plain
+3ffe8bdb	No Reset
+3ffe8be4	BAD ARGS
+3ffe8bed	BAD PATH
+3ffe8bf6	FILE EXISTS
+3ffe8c02	CREATE FAILED
+3ffe8c10	FileNotFound
+3ffe8c21	{"type":"
+3ffe8c2b	","name":"
+3ffe8c36	text/json
+3ffe8c40	index.htm
+3ffe8c4a	/edit.htm
+3ffe8c54	""\\\\b
+3ffe8c5c	n\nr\rt\t
+3ffe8c63	/maxSpeed
+3ffe8c6d	timezone
+3ffe8c76	/Time
+3ffe8c7c	/timeZone
+3ffe8c86	null
+3ffe8c8f	Infinity
+3ffe8c9b	true
+3ffe8ca0	false
+3ffe8ca9	rcCode.json
+3ffe8cb5	Сохранен код -
+3ffe8cd0	ssidAP
+3ffe8cd7	passwordAP
+3ffe8ce2	password
+3ffe8ceb	flashChip
+3ffe8cf5	/charts.json
+3ffe8d02	/On6
+3ffe8d07	/Off6
+3ffe8d0d	/On7
+3ffe8d12	/Off7
+3ffe8d18	/config.live.json
+3ffe8d2a	/config.setup.json
+3ffe8d3d	/restart
+3ffe8d46	Kart_4_
+3ffe8d4e	ktWiFi
+3ffe8d55	AP_PASSWORD_REDACTED
+3ffe8d5f	CrazyDrift
+3ffe8d6a	WIFI_PASSWORD_REDACTED
+3ffe8d7c	points
+3ffe8d83	refresh
+3ffe8d8b	WiFi connected
+3ffe8d9a	IP address: 
+3ffe8da7	WiFi up AP
+3ffe8db2	/ssid
+3ffe8db8	/ssidap
+3ffe8dc0	/wifion
+3ffe8dc8	/wifioff
+3ffe8dd5	{"dIn":"
+3ffe8dde	","adcIn":"
+3ffe8dea	adcIn
+3ffe8df0	","temperature1":"
+3ffe8e03	temperature1
+3ffe8e10	/description.xml
+3ffe8e21	/ssdp
+3ffe8e27	upnp:rootdevice
+3ffe8e37	tech
+3ffe8e3c	http://istu.ru
+3ffe8e4b	IstuVt
+3ffe8e52	rc_swith_on = 
+3ffe8e61	/rcVal
+3ffe8e68	rc_save_code = 
+3ffe8e78	NOT rc_save_code
+3ffe8e89	0x00
+3ffe8e8e	SERVER_ADDR_1_REDACTED
+3ffe8e9c	SERVER_ADDR_2_REDACTED
+3ffe8eac	Update start
+3ffe8eb9	HTTP_UPDATE_FAILD Error (%d): %s\n
+3ffe8edb	HTTP_UPDATE_NO_UPDATES
+3ffe8ef2	HTTP_UPDATE_OK
+3ffe8f01	lengthDrive
+3ffe8f0d	driveOn
+3ffe8f15	timeDriveOn
+3ffe8f21	timeParking
+3ffe8f2d	remoteMode
+3ffe8f38	localModeStart
+3ffe8f47	localModeWaitStart
+3ffe8f5a	localModeDriveON
+3ffe8f6b	MinDV
+3ffe8f71	MaxDV
+3ffe8f77	MinV
+3ffe8f7c	MaxV
+3ffe8f81	MinDDV
+3ffe8f88	MaxDDV
+3ffe8f8f	LastDriveTime
+3ffe8f9d	LastParkingTime
+3ffe8fad	LastWaitTime
+3ffe8fba	uptime
+3ffe8fc1	Связь отсутствует 12 часов! Перезапуск
+3ffe8fe2	 12 
+3ffe9008	Time_reboot
+3ffe9014	TimeReboot.json
+3ffe9024	Time:
+3ffe902a	закончилось время катания и началось время парковки S=
+3ffe908a	 S= 
+3ffe908f	активация локального режима S=
+3ffe90c3	 S= 
+3ffe90c8	завершенеи локального режима
+3ffe90ff	закончилось время парковки
+3ffe9132	закончилось локальное катание
+3ffe916d	закончилось время ожидания катания
+3ffe91af	[WSc] Disconnected!
+3ffe91c3	 DriveON: %d
+3ffe91d0	 timeDriveOn: %d
+3ffe91e1	 timeParking: %d
+3ffe91f2	 localModeStart: %d
+3ffe9206	 llocalModeWaitStart: %d
+3ffe921f	 WiFi.Connected: %d\n
+3ffe9234	[WSc] Connected to url: %s\n
+3ffe9250	Command
+3ffe9258	Init
+3ffe925d	DUUID
+3ffe9263	[WSc] get text: %s\n
+3ffe9277	Length
+3ffe927e	localDrivesCount
+3ffe928f	Start OK
+3ffe9298	Stop
+3ffe929d	Stop OK
+3ffe92a5	MaxSpeed
+3ffe92ae	MaxSpeed OK
+3ffe92ba	Status
+3ffe92c1	Status OK
+3ffe92cb	Update
+3ffe92d2	file_url
+3ffe92db	Update OK
+3ffe92e5	UpdateFS
+3ffe92ee	error
+3ffe92f4	[WSc] get binary length: %u\n
+3ffe9311	[WSc] get ping\n
+3ffe9321	[WSc] get pong
+3ffe9334	adc0
+3ffe9339	adc3
+3ffe9342	kOn1
+3ffe9347	rssi
+3ffe934c	rc_coins
+3ffe9355	blockLokalDrive
+3ffe9365	DrivePoints
+3ffe9371	кол-во монет =
+3ffe938b	время равно =
+3ffe93a4	началось время катания, S =
+3ffe93ce	, S = 
+3ffe93d5	началось локальное катание
+3ffe9408	!!!!!RCKey!!!!! = 
+3ffe941b	rc_val
+3ffe9422	rc_counts
+3ffe942c	Device_name
+3ffe9438	Kart
+3ffe943d	Device_model
+3ffe944e	Firmvare_version
+3ffe945f	0.9.10
+3ffe9466	/Sensors
+3ffe946f	dhttime
+3ffe9477	Sen ok = 
+3ffe9481	Start FS
+3ffe948a	timeReboot = 
+3ffe9498	Time_reboot NUL
+3ffe94a8	SAMT-4SAMST,M3.5.0,M10.5.0/3
+3ffe94c8	Time reboot = 
+3ffe94d7	Config
+3ffe94de	Config = 
+3ffe94e8	Default config = 
+3ffe94fa	reboots
+3ffe9502	reboots = 
+3ffe950d	reboots NUL
+3ffe9519	localDrivesCount = 
+3ffe952d	localDrivesCount NUL
+3ffe9542	Start WIFI
+3ffe954d	Start RC
+3ffe9556	Start sensors
+3ffe9564	Start Time
+3ffe956f	Start SSDP
+3ffe957a	Start WebServer
+3ffe958a	Start WebSoketServer
+3ffe959f	Start Inter
+3ffe95ab	Start ADC_DAC
+3ffe95b9	Start WebSoketClient
+3ffe95ce	WEB_PASSWORD_REDACTED
+3ffe95d9	admin
+3ffe95df	%02X:%02X:%02X:%02X:%02X:%02X
+3ffe960e	urn:schemas-upnp-org:device:Basic:1
+3ffe9632	ssdp/schema.xml
+3ffe9648	M-SEARCH
+3ffe9651	ssdp:all
+3ffe9660	x-MD5
+3ffe9666	http
+3ffe966b	https
+3ffe9675	HEAD
+3ffe967a	www.
+3ffe9683	-FAIL-
+3ffe968a	258EAFA5-E914-47DA-95CA-C5AB0DC85B11
+3ffe96af	Origin: file://
+3ffe96bf	&transport=polling
+3ffe96d2	&transport=websocket&sid=
+3ffe96ec	GET 
+3ffe96f1	 HTTP/1.1\r\nHost: 
+3ffe9703	Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: 
+3ffe975b	Sec-WebSocket-Protocol: 
+3ffe9774	Sec-WebSocket-Extensions: 
+3ffe978f	Connection: keep-alive\r\n
+3ffe97a8	User-Agent: arduino-WebSocket-Client\r\n
+3ffe97cf	Authorization: Basic 
+3ffe97e5	Authorization: 
+3ffe97f5	HTTP/1.
+3ffe97fd	"sid":"
+3ffe9805	Connection
+3ffe9810	upgrade
+3ffe9818	Upgrade
+3ffe9820	websocket
+3ffe982a	Sec-WebSocket-Accept
+3ffe983f	Sec-WebSocket-Protocol
+3ffe9856	Sec-WebSocket-Extensions
+3ffe986f	Sec-WebSocket-Version
+3ffe9885	Set-Cookie
+3ffe9892	This is a webSocket client!
+3ffe98ae	HTTP/1.1 401 Unauthorized\r\nServer: arduino-WebSocket-Server\r\nContent-Type: text/plain\r\nContent-Length: 45\r\nConnection: close\r\nSec-WebSocket-Version: 13\r\nWWW-Authenticate: Basic realm="WebSocket Server"\r\nThis Websocket server requires Authorization!
+3ffe99a7	HTTP/1.1 400 Bad Request\r\nServer: arduino-WebSocket-Server\r\nContent-Type: text/plain\r\nContent-Length: 32\r\nConnection: close\r\nSec-WebSocket-Version: 13\r\n\r\nThis is a Websocket server only!
+3ffe9a62	Sec-WebSocket-Key
+3ffe9a74	Authorization
+3ffe9a82	HTTP/1.1 101 Switching Protocols\r\nServer: arduino-WebSocketsServer\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Accept: 
+3ffe9b21	Access-Control-Allow-Origin: 
+3ffe9b3f	TIMEOUT
+3ffe9b47	CHECKSUM
+3ffe9bf2	Sc%02x
+3ffe9bf9	%lld
+3ffe9c06	ISR not in IRAM!\r
+3ffe9c18	\n[HEXDUMP] Address: %p len: 0x%X (%d)
+3ffe9c3e	\n[%p] 0x%04x: 
+3ffe9c4d	%02x 
+3ffe9c57	FATAL ERROR: BSSL stack overflow\n
+3ffe9c8c	%s %u\n
+3ffe9d26	.local
+3ffe9d75	REENT malloc succeeded
+3ffe9d8c	lcltime.c
+3ffe9d9e	e%ld
+3ffe9da3	rand.c
+3ffe9dae	%9[^>]>%n
+3ffe9dba	%10[^0-9,+-]%n
+3ffe9dc9	M%hu%n.%hu%n.%hu%n
+3ffe9ddc	/%hu%n:%hu%n:%hu%n
+3ffe9def	asctime.c
+3ffe9df9	%.3s %.3s%3d %.2d:%.2d:%.2d %d\n
+3ffe9e19	dtoa.c
+3ffe9e20	Balloc succeeded
+3ffe9e31	gdtoa-gethex.c
+3ffe9e40	POSIX
+3ffe9e46	mprec.c
+3ffe9e4e	#-0+ 
+3ffe9e58	efgEFG
+3ffe9e65	A-Fa-f8901234567]
+3ffe9e79	`'@Pa'@
+3ffe9e85	`'@Pa'@
+3ffe9e9c	key expansion
+3ffe9eac	master secret
+3ffe9ec1	client finished
+3ffe9ed1	server finished
+3ffe9f55	`'@Pa'@
+3ffe9f61	`'@``'@
+3ffe9f74	(`'@
+3ffe9f88	p_'@
+3ffe9f8d	^'@(_'@
+3ffe9f9c	esp8266
+3ffe9fb0	<z @
+3ffe9fc9	<!@T=!@
+3ffe9fd5	T!@p]!@
+3ffe9ff6	@г @
